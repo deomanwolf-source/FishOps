@@ -1,10 +1,10 @@
-const CACHE_NAME = "fishops-cache-v15";
+const CACHE_NAME = "fishops-cache-v16";
 const CACHE_URLS = [
   "./",
   "./index.html",
   "./manifest.json",
   "./web/styles.css",
-  "./web/app.js",
+  "./web/app.js?v=20260304-1",
   "./web/icon-192.png",
   "./web/icon-512.png"
 ];

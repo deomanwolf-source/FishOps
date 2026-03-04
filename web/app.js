@@ -182,7 +182,7 @@ let storageQuotaFailureAlertShown = false;
 const state = {
   currentUser: null,
   branchId: "",
-  date: "2026-02-15",
+  date: isoDateToday(),
   activePage: "dashboard",
   quickSearch: {
     branchFishSettings: "",
@@ -5084,7 +5084,7 @@ function startSession(user) {
   state.quickSearch.remainingHolds = "";
   state.quickSearch.morningOpeningStock = "";
   state.quickSearch.nightClosingStock = "";
-  state.date = user.role === "user" ? isoDateToday() : "2026-02-15";
+  state.date = isoDateToday();
   ui.dateInput.value = state.date;
   populateBranchSelector();
   applyBranding();
