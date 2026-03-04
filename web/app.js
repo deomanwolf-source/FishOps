@@ -2978,7 +2978,7 @@ function renderAboutPage() {
           </article>
           <article class="signature-item">
             <p class="signature-label">Build Location</p>
-            <p class="signature-value">Sri Lanka</p>
+            <p class="signature-value">Sri Lanka | USA</p>
           </article>
           <article class="signature-item">
             <p class="signature-label">Ownership Notice</p>
