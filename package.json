@@ -1,0 +1,25 @@
+{
+  "name": "rtx-fishops",
+  "version": "6.11.0",
+  "private": true,
+  "description": "RTX FishOps - Fish Store Operations System (Enterprise Release, PWA + IndexedDB)",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "tsc -p tsconfig.json",
+    "start": "node server/index.mjs",
+    "start:engine": "node dist/src/index.js",
+    "serve": "node server/index.mjs",
+    "serve:lan": "node server/index.mjs",
+    "serve:static": "node tools/serve-web.mjs --host 0.0.0.0 --port 8080"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.10.0",
+    "cors": "^2.8.5",
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.11",
+    "typescript": "^5.8.2"
+  }
+}

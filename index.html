@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>RTX FishOps</title>
+    <meta name="theme-color" content="#1e3a8a" />
+    <link rel="manifest" href="./manifest.json" />
+    <link rel="icon" href="./web/icon-192.png" sizes="192x192" />
+    <link rel="apple-touch-icon" href="./web/icon-192.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./web/styles.css" />
+  </head>
+  <body>
+    <div class="app-frame">
+      <section id="loginScreen" class="login-screen">
+        <form id="loginForm" class="login-card">
+          <div class="login-brand">
+            <div class="brand-mark" id="loginBrandMark">RTx</div>
+            <div>
+              <h1>FishOps Login</h1>
+              <p>Operational Blue + Teal</p>
+            </div>
+          </div>
+
+          <label for="usernameInput">Username</label>
+          <input id="usernameInput" type="text" autocomplete="username" required />
+
+          <label for="passwordInput">Password</label>
+          <input
+            id="passwordInput"
+            type="password"
+            autocomplete="current-password"
+            required
+          />
+
+          <button type="submit" class="btn btn-primary login-btn">Sign In</button>
+          <p id="loginError" class="login-error"></p>
+        </form>
+      </section>
+
+      <div id="appShell" class="layout hidden">
+        <aside class="sidebar">
+          <div class="brand">
+            <div class="brand-mark" id="mainBrandMark">RTx</div>
+            <div>
+              <div class="brand-title" id="brandTitle">FishOps</div>
+              <div class="brand-subtitle">Operational Blue + Teal</div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="user-meta">
+              <button type="button" id="sessionAvatar" class="session-avatar">RT</button>
+              <div class="user-meta-text">
+                <strong id="sessionUser">-</strong>
+                <span id="sessionRole" class="chip info"></span>
+              </div>
+            </div>
+            <button id="changePhotoBtn" class="btn btn-soft" type="button">Change Profile Photo</button>
+            <input id="photoInput" class="hidden" type="file" accept="image/png,image/jpeg,image/webp" />
+            <input id="logoInput" class="hidden" type="file" accept="image/png,image/jpeg,image/webp" />
+            <label for="branchSelect">Branch</label>
+            <select id="branchSelect"></select>
+            <label for="dateInput">Date</label>
+            <input id="dateInput" type="date" />
+            <button id="logoutBtn" class="btn btn-outline btn-light">Logout</button>
+          </div>
+
+          <nav id="navMenu" class="nav-menu"></nav>
+        </aside>
+
+        <main class="main">
+          <header class="topbar">
+            <div>
+              <h1 id="pageTitle">Branch Dashboard</h1>
+              <p id="contextText"></p>
+            </div>
+            <div class="topbar-actions" id="topbarActions"></div>
+          </header>
+
+          <section id="pageHost"></section>
+        </main>
+      </div>
+    </div>
+    <footer class="global-footer">
+      &copy; 2026 RTX FishOps | 6.11.0 (Enterprise Release) | RUN by RTX Virual Engine
+      Technology | Developed by Hasintha Arunalu | RTX Technologies. All rights reserved.
+    </footer>
+    <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+    <script type="module" src="./web/app.js"></script>
+  </body>
+</html>
