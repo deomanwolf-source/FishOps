@@ -3005,7 +3005,7 @@ function renderAboutPage() {
           branches in real time.
         </p>
         <p class="signature-purpose-text">
-          Powered by RTX Virual Engine, the platform provides reliable offline-first
+          Powered by RTX Virual Engine, the platform provides reliable online-first
           performance, secure cloud connectivity, and scalable infrastructure designed for
           global retail deployment.
         </p>
