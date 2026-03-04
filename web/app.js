@@ -15,10 +15,7 @@ const LOCAL_STORE_PERSISTENCE_ENABLED = false;
 
 const DEFAULT_STORE = {
   data: {
-    branches: [
-      { id: "BR-001", name: "Colombo Main", location: "Colombo", status: "active" },
-      { id: "BR-002", name: "Negombo Harbor", location: "Negombo", status: "active" }
-    ],
+    branches: [],
     users: [
       {
         id: "USR-MASTER-001",
@@ -28,58 +25,10 @@ const DEFAULT_STORE = {
         branch_id: null,
         status: "active",
         photo: ""
-      },
-      {
-        id: "USR-ADMIN-001",
-        username: "admin_colombo",
-        password: "admin123",
-        role: "admin",
-        branch_id: "BR-001",
-        status: "active",
-        photo: ""
-      },
-      {
-        id: "USR-USER-001",
-        username: "user_colombo",
-        password: "user123",
-        role: "user",
-        branch_id: "BR-001",
-        status: "active",
-        photo: ""
       }
     ],
-    fish_profiles: [
-      {
-        id: "FISH-001",
-        fish_code: "FISH-TUNA",
-        name: "Tuna",
-        category: "Sea",
-        unit: "kg",
-        status: "active"
-      },
-      {
-        id: "FISH-002",
-        fish_code: "FISH-POMFRET",
-        name: "Pomfret",
-        category: "Sea",
-        unit: "kg",
-        status: "active"
-      },
-      {
-        id: "FISH-003",
-        fish_code: "FISH-TILAPIA",
-        name: "Tilapia",
-        category: "Freshwater",
-        unit: "kg",
-        status: "active"
-      }
-    ],
-    branch_fish_settings: [
-      { id: "SET-001", branch_id: "BR-001", fish_id: "FISH-001", min_stock: 20, target_stock: 50, is_active: true },
-      { id: "SET-002", branch_id: "BR-001", fish_id: "FISH-002", min_stock: 15, target_stock: 35, is_active: true },
-      { id: "SET-003", branch_id: "BR-001", fish_id: "FISH-003", min_stock: 25, target_stock: 45, is_active: true },
-      { id: "SET-004", branch_id: "BR-002", fish_id: "FISH-001", min_stock: 16, target_stock: 40, is_active: true }
-    ],
+    fish_profiles: [],
+    branch_fish_settings: [],
     daily_prices: [],
     daily_stock_entry: [],
     hold_stock_entry: []
