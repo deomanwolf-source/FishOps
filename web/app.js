@@ -835,15 +835,11 @@ async function checkForRemoteStoreUpdate() {
     return;
   }
 
-  remoteStoreVersion = latestVersion;
-  const shouldReload = window.confirm(
-    "A new backup is available on the server. Reload updated data now?"
-  );
-  if (!shouldReload) {
-    return;
+  const previousVersion = remoteStoreVersion;
+  const reloaded = await reloadStoreFromServer(false);
+  if (reloaded && remoteStoreVersion === previousVersion) {
+    remoteStoreVersion = latestVersion;
   }
-
-  await reloadStoreFromServer(true);
 }
 
 function startRemoteStorePolling() {
