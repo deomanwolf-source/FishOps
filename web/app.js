@@ -2909,7 +2909,7 @@ function renderAboutPage() {
     <section class="app-signature">
       <section class="card wide signature-hero">
         <h2>Application Signature</h2>
-        <p>Official product and ownership details for the RTX Virual Engine system.</p>
+        <p>Official product, ownership, and platform details for RTX FishOps.</p>
       </section>
 
       <section class="card wide signature-logo-card">
@@ -2919,7 +2919,7 @@ function renderAboutPage() {
             src="${escapeHtml(aboutLogoSrc)}"
             alt="RTX Technologies logo"
           />
-          <p class="signature-logo-company">RTX technologies (pvt) Ltd</p>
+          <p class="signature-logo-company">RTX Technologies Pvt Ltd</p>
         </div>
       </section>
 
@@ -2927,12 +2927,12 @@ function renderAboutPage() {
         <div class="signature-grid">
           <article class="signature-item">
             <p class="signature-label">Application Name</p>
-            <p class="signature-value">RTX FishOps - Fish Store Operations System</p>
+            <p class="signature-value">RTX FishOps - Retail Operations & Inventory SaaS Platform</p>
           </article>
           <article class="signature-item">
             <p class="signature-label">Version</p>
-            <p class="signature-value">6.11.0 (Enterprise Release)</p>
-            <p class="signature-subtext">RUN by RTX Virual Engine Technology</p>
+            <p class="signature-value">Version 6.11.0 - Enterprise SaaS Release</p>
+            <p class="signature-subtext">Powered by RTX Virual Engine Runtime</p>
           </article>
           <article class="signature-item">
             <p class="signature-label">Developed By</p>
@@ -2941,25 +2941,30 @@ function renderAboutPage() {
           </article>
           <article class="signature-item">
             <p class="signature-label">Organization</p>
-            <p class="signature-value">RTX Technologies</p>
+            <p class="signature-value">RTX Technologies Pvt Ltd</p>
           </article>
           <article class="signature-item">
             <p class="signature-label">Domain</p>
-            <p class="signature-value">Fish Retail Operations / Inventory & Finance</p>
+            <p class="signature-value">Retail Operations Management / Inventory / Financial Processing</p>
           </article>
           <article class="signature-item">
             <p class="signature-label">Development Type</p>
-            <p class="signature-value">Proprietary In-House Software</p>
+            <p class="signature-value">Proprietary SaaS Platform - Built and Maintained In-House</p>
           </article>
           <article class="signature-item">
             <p class="signature-label">Technology Stack</p>
-            <p class="signature-value">TypeScript, JavaScript, IndexedDB, HTML/CSS, PWA</p>
-            <p class="signature-subtext">RTX Virual Engine runtime with service worker support</p>
+            <p class="signature-value">
+              TypeScript, JavaScript, IndexedDB, HTML5, CSS3, Progressive Web Application (PWA)
+            </p>
+            <p class="signature-subtext">RTX Virual Engine Runtime with Service Worker Architecture</p>
           </article>
           <article class="signature-item">
             <p class="signature-label">Target Platform</p>
-            <p class="signature-value">Windows (RTX Virual Engine / PWA Desktop Install)</p>
-            <p class="signature-subtext">Future: Cloud sync and multi-branch SaaS expansion</p>
+            <p class="signature-value">Cross-Platform Web Application</p>
+            <p class="signature-subtext">
+              Windows (PWA Desktop Install) | Browser | RTX Virual Engine Runtime
+            </p>
+            <p class="signature-subtext">Future Roadmap: Cloud Sync & Multi-Branch SaaS Infrastructure</p>
           </article>
           <article class="signature-item">
             <p class="signature-label">Build Location</p>
@@ -2967,10 +2972,16 @@ function renderAboutPage() {
           </article>
           <article class="signature-item">
             <p class="signature-label">Ownership Notice</p>
-            <p class="signature-value">Copyright \u00A9 2026 RTX Technologies. All rights reserved.</p>
+            <p class="signature-value">
+              Copyright \u00A9 2026 RTX Technologies Pvt Ltd. All Rights Reserved.
+            </p>
             <p class="signature-subtext">
-              This software is proprietary intellectual property. Unauthorized duplication,
-              modification, or distribution is strictly prohibited.
+              RTX FishOps and RTX Virual Engine are proprietary technologies of RTX Technologies
+              Pvt Ltd.
+            </p>
+            <p class="signature-subtext">
+              Unauthorized reproduction, distribution, reverse engineering, or modification of this
+              software is strictly prohibited.
             </p>
           </article>
         </div>
@@ -2979,9 +2990,10 @@ function renderAboutPage() {
       <section class="card wide signature-purpose">
         <p class="signature-label">Purpose Statement</p>
         <p class="signature-purpose-text">
-          Designed and engineered to deliver a reliable fish operations system powered by
-          RTX Virual Engine
-          optimized for daily execution, financial clarity, and multi-branch scalability.
+          RTX FishOps is a SaaS-based retail operations platform designed to streamline fish
+          store management, inventory tracking, financial operations, and multi-branch
+          coordination. Built on RTX Virual Engine, the system provides high reliability,
+          offline capability, and scalable infrastructure for modern retail environments.
         </p>
       </section>
 
