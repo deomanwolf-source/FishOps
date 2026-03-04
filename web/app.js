@@ -2962,9 +2962,19 @@ function renderAboutPage() {
             <p class="signature-label">Target Platform</p>
             <p class="signature-value">Cross-Platform Web Application</p>
             <p class="signature-subtext">
-              Windows (PWA Desktop Install) | Browser | RTX Virual Engine Runtime
+              Windows (PWA Desktop Install) | Web Browser | RTX Virual Engine Runtime
             </p>
-            <p class="signature-subtext">Future Roadmap: Cloud Sync & Multi-Branch SaaS Infrastructure</p>
+            <p class="signature-subtext">
+              Cloud-enabled architecture supporting real-time synchronization,
+              multi-branch operations, and distributed deployment across locations.
+            </p>
+            <p class="signature-subtext">Designed for global scale SaaS deployment.</p>
+          </article>
+          <article class="signature-item">
+            <p class="signature-label">Deployment Model</p>
+            <p class="signature-value">
+              Cloud-enabled SaaS | Multi-Branch Distributed System | Secure Remote Access
+            </p>
           </article>
           <article class="signature-item">
             <p class="signature-label">Build Location</p>
@@ -2990,10 +3000,14 @@ function renderAboutPage() {
       <section class="card wide signature-purpose">
         <p class="signature-label">Purpose Statement</p>
         <p class="signature-purpose-text">
-          RTX FishOps is a SaaS-based retail operations platform designed to streamline fish
-          store management, inventory tracking, financial operations, and multi-branch
-          coordination. Built on RTX Virual Engine, the system provides high reliability,
-          offline capability, and scalable infrastructure for modern retail environments.
+          RTX FishOps is a SaaS-based retail operations platform engineered to manage fish
+          retail operations, inventory tracking, and financial workflows across multiple
+          branches in real time.
+        </p>
+        <p class="signature-purpose-text">
+          Powered by RTX Virual Engine, the platform provides reliable offline-first
+          performance, secure cloud connectivity, and scalable infrastructure designed for
+          global retail deployment.
         </p>
       </section>
 
