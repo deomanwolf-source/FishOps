@@ -404,9 +404,6 @@ function loadStore(overrideSnapshot = null) {
       row.auto_price_from = "";
     }
     row.price_source = normalizePriceSource(row.price_source);
-    if (row.price_source === "morning" && isIsoDate(row.auto_price_from)) {
-      row.cost_price_per_unit = 0;
-    }
   }
 
   for (const row of DATA.daily_stock_entry) {
@@ -570,7 +567,7 @@ function loadStore(overrideSnapshot = null) {
       branch_id: stockRow.branch_id,
       fish_id: stockRow.fish_id,
       sell_price_per_unit: Math.round(numberOr(sourcePrice.sell_price_per_unit, 0)),
-      cost_price_per_unit: 0,
+      cost_price_per_unit: Math.round(numberOr(sourcePrice.cost_price_per_unit, 0)),
       auto_price_from: sourceDate,
       price_source: "morning"
     });
@@ -1350,7 +1347,7 @@ function autoCarryClosingToNextDay(branchId, sourceDate) {
       nextDate,
       source.fish_id,
       Math.round(numberOr(sourcePrice.sell_price_per_unit, 0)),
-      0,
+      Math.round(numberOr(sourcePrice.cost_price_per_unit, 0)),
       { auto_price_from: sourceDate, price_source: "morning" }
     );
   }
@@ -1599,7 +1596,10 @@ function buildSummary(branchId, dateText) {
     const yStockSoldQty = Math.max(0, Math.min(round2(sold), autoCarriedOpeningQty));
     const normalSoldQty = Math.max(0, round2(sold - yStockSoldQty));
 
-    const yPrice = yStockSoldQty > 0 ? getDailyPrice(setting.branch_id, sourceDate, setting.fish_id, "morning") : null;
+    const yPrice =
+      yStockSoldQty > 0
+        ? getDailyPrice(setting.branch_id, sourceDate, setting.fish_id, "morning") || price
+        : null;
 
     let yRevenue = yStockSoldQty > 0 ? (yPrice ? round2(yStockSoldQty * yPrice.sell_price_per_unit) : null) : 0;
     let yCost = yStockSoldQty > 0 ? (yPrice ? round2(yStockSoldQty * yPrice.cost_price_per_unit) : null) : 0;
@@ -2526,10 +2526,7 @@ function renderYDailyPricesPage() {
     })
     .map((entry) => {
       const fish = findFishById(entry.fish_id);
-      const price =
-        getDailyPrice(state.branchId, sourceDate, entry.fish_id, "morning") ||
-        getDailyPrice(state.branchId, state.date, entry.fish_id, "morning") ||
-        null;
+      const price = getDailyPrice(state.branchId, state.date, entry.fish_id, "morning") || null;
       const hasPrice = Boolean(price);
       const searchable = `${fishSearchText(fish, entry.fish_id)} ${sourceDate}`.trim();
 
