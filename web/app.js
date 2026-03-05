@@ -1236,8 +1236,7 @@ function moveHoldEntryToOperationalStock(entry) {
     return "";
   }
 
-  const baseDate = isIsoDate(state.date) ? state.date : entry.date;
-  const targetDate = getTomorrow(baseDate);
+  const targetDate = isIsoDate(state.date) ? state.date : entry.date;
   if (!targetDate) {
     return "";
   }
