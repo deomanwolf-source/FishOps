@@ -107,6 +107,7 @@ const PAGES = [
   { id: "fish_profiles", title: "Fish Profiles", permission: "view_fish_profiles" },
   { id: "branch_fish_settings", title: "Branch Fish Settings", permission: "set_branch_stock_levels" },
   { id: "daily_prices", title: "Daily Prices", permission: "set_daily_prices" },
+  { id: "y_daily_prices", title: "Y- Daily Price", permission: "set_daily_prices" },
   { id: "hold_stock", title: "Hold Stock", permission: "manage_hold_stock" },
   { id: "remaining_stock_holds", title: "Current Stocks & Holds", permission: "manage_hold_stock" },
   { id: "morning_opening_stock", title: "Morning Opening Stock", permission: "enter_opening_stock" },
@@ -136,6 +137,7 @@ const state = {
   quickSearch: {
     branchFishSettings: "",
     dailyPrices: "",
+    yDailyPrices: "",
     holdStock: "",
     remainingStocks: "",
     remainingHolds: "",
@@ -1525,6 +1527,7 @@ function buildSummary(branchId, dateText) {
       ? Math.max(0, round2(numberOr(entry.opening_qty, 0)))
       : 0;
     const soldQtyForCost = Math.max(0, round2(sold - autoCarriedOpeningQty));
+    const yStockSoldQty = Math.max(0, round2(sold - soldQtyForCost));
     let revenue = price ? round2(sold * price.sell_price_per_unit) : null;
     let cost = price ? round2(soldQtyForCost * price.cost_price_per_unit) : null;
     let profit = revenue !== null && cost !== null ? round2(revenue - cost) : null;
@@ -1547,6 +1550,7 @@ function buildSummary(branchId, dateText) {
         setting,
         entry,
         sold,
+        yStock: yStockSoldQty,
         closing,
         waste,
         orderQty: Math.max(0, round2(targetStock - closing)),
@@ -1565,6 +1569,7 @@ function buildSummary(branchId, dateText) {
           setting: null,
           entry: null,
           sold: 0,
+          yStock: 0,
           closing: 0,
           waste: 0,
           orderQty: 0,
@@ -1581,6 +1586,7 @@ function buildSummary(branchId, dateText) {
       }
 
       aggregated.sold = round2(aggregated.sold + sold);
+      aggregated.yStock = round2(aggregated.yStock + yStockSoldQty);
       aggregated.closing = round2(aggregated.closing + closing);
       aggregated.waste = round2(aggregated.waste + waste);
       aggregated._minStock = round2(aggregated._minStock + minStock);
@@ -1631,6 +1637,7 @@ function buildSummary(branchId, dateText) {
         setting,
         entry: null,
         sold: 0,
+        yStock: 0,
         closing: 0,
         waste: 0,
         orderQty: Math.max(0, round2(targetStock)),
@@ -1649,6 +1656,7 @@ function buildSummary(branchId, dateText) {
           setting: null,
           entry: null,
           sold: 0,
+          yStock: 0,
           closing: 0,
           waste: 0,
           orderQty: 0,
@@ -1816,6 +1824,7 @@ function renderDailySummaryTable(rows) {
             <tr>
               <th>Fish</th>
               <th>Sold</th>
+              <th>Y Stock</th>
               <th>Closing</th>
               <th>Waste</th>
               <th>Revenue</th>
@@ -1827,13 +1836,14 @@ function renderDailySummaryTable(rows) {
           <tbody>
             ${
               rows.length === 0
-                ? '<tr><td colspan="8" class="empty-state">No stock entries for selected date.</td></tr>'
+                ? '<tr><td colspan="9" class="empty-state">No stock entries for selected date.</td></tr>'
                 : rows
                     .map(
                       (row) => `
                         <tr>
                           <td>${escapeHtml(row.fish.name)}</td>
                           <td>${row.sold.toFixed(2)} ${escapeHtml(row.fish.unit)}</td>
+                          <td>${row.yStock.toFixed(2)} ${escapeHtml(row.fish.unit)}</td>
                           <td>${row.closing.toFixed(2)} ${escapeHtml(row.fish.unit)}</td>
                           <td>${row.waste.toFixed(2)} ${escapeHtml(row.fish.unit)}</td>
                           <td>${row.revenue === null ? "-" : money(row.revenue)}</td>
@@ -2319,6 +2329,90 @@ function renderDailyPricesPage() {
             ${
               rows
                 ? '<tr id="dailyPricesSearchEmptyRow" class="hidden"><td colspan="4" class="empty-state">No fish match your search.</td></tr>'
+                : ""
+            }
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function renderYDailyPricesPage() {
+  if (isAllBranchesSelected()) {
+    return `
+      <section class="card wide">
+        <div class="card-header"><h3>Y- Daily Price</h3></div>
+        <p class="empty-state">Select a single branch to view yesterday carried stock prices.</p>
+      </section>
+    `;
+  }
+
+  const sourceDate = getYesterday(state.date);
+  const rows = DATA.daily_stock_entry
+    .filter(
+      (row) =>
+        row.branch_id === state.branchId &&
+        row.date === state.date &&
+        String(row.auto_opening_from || "") === sourceDate &&
+        numberOr(row.opening_qty, 0) > 0
+    )
+    .sort((a, b) => {
+      const aFish = findFishById(a.fish_id);
+      const bFish = findFishById(b.fish_id);
+      return String(aFish?.name || a.fish_id || "").localeCompare(String(bFish?.name || b.fish_id || ""));
+    })
+    .map((entry) => {
+      const fish = findFishById(entry.fish_id);
+      const price = getDailyPrice(state.branchId, state.date, entry.fish_id) || null;
+      const hasPrice = Boolean(price);
+      const searchable = `${fishSearchText(fish, entry.fish_id)} ${sourceDate}`.trim();
+
+      return `
+        <tr data-fish-search="${escapeHtml(searchable)}">
+          <td>${escapeHtml(fishDisplayLabel(fish, entry.fish_id))} (remaining)</td>
+          <td>${Math.max(0, round2(numberOr(entry.opening_qty, 0))).toFixed(2)}</td>
+          <td>${hasPrice ? Math.round(numberOr(price.sell_price_per_unit, 0)).toLocaleString() : "-"}</td>
+          <td>${hasPrice ? Math.round(numberOr(price.cost_price_per_unit, 0)).toLocaleString() : "-"}</td>
+          <td>${escapeHtml(sourceDate || "-")}</td>
+          <td><span class="chip ${hasPrice ? "ok" : "critical"}">${hasPrice ? "READY" : "MISSING"}</span></td>
+        </tr>
+      `;
+    })
+    .join("");
+
+  return `
+    <section class="card wide">
+      <div class="card-header">
+        <h3>Y- Daily Price (${escapeHtml(state.date)})</h3>
+        <p class="page-note">Yesterday carried opening stock prices used for today's Y stock.</p>
+      </div>
+      <div class="table-search">
+        <input
+          id="yDailyPricesSearchInput"
+          class="table-input"
+          type="search"
+          placeholder="Quick find by fish code or name"
+          value="${escapeHtml(state.quickSearch.yDailyPrices)}"
+        />
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Fish</th>
+              <th>Opening Qty</th>
+              <th>Sell Price</th>
+              <th>Cost Price</th>
+              <th>From Date</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="yDailyPricesTableBody">
+            ${rows || '<tr><td colspan="6" class="empty-state">No carried stock prices for this date.</td></tr>'}
+            ${
+              rows
+                ? '<tr id="yDailyPricesSearchEmptyRow" class="hidden"><td colspan="6" class="empty-state">No fish match your search.</td></tr>'
                 : ""
             }
           </tbody>
@@ -3303,6 +3397,8 @@ function renderActivePage() {
       return renderBranchFishSettingsPage();
     case "daily_prices":
       return renderDailyPricesPage();
+    case "y_daily_prices":
+      return renderYDailyPricesPage();
     case "hold_stock":
       return renderHoldStockPage();
     case "remaining_stock_holds":
@@ -4518,6 +4614,15 @@ function bindDailyPricesEvents() {
   });
 }
 
+function bindYDailyPricesEvents() {
+  bindFishQuickSearch(
+    "yDailyPricesSearchInput",
+    "yDailyPricesTableBody",
+    "yDailyPricesSearchEmptyRow",
+    "yDailyPrices"
+  );
+}
+
 function bindHoldStockEvents() {
   bindFishQuickSearch(
     "holdStockSearchInput",
@@ -5165,6 +5270,9 @@ function bindActivePageEvents() {
     case "daily_prices":
       bindDailyPricesEvents();
       break;
+    case "y_daily_prices":
+      bindYDailyPricesEvents();
+      break;
     case "hold_stock":
       bindHoldStockEvents();
       break;
@@ -5260,6 +5368,7 @@ function startSession(user) {
   state.activePage = "dashboard";
   state.quickSearch.branchFishSettings = "";
   state.quickSearch.dailyPrices = "";
+  state.quickSearch.yDailyPrices = "";
   state.quickSearch.holdStock = "";
   state.quickSearch.remainingStocks = "";
   state.quickSearch.remainingHolds = "";
@@ -5280,6 +5389,7 @@ function endSession() {
   state.currentUser = null;
   state.quickSearch.branchFishSettings = "";
   state.quickSearch.dailyPrices = "";
+  state.quickSearch.yDailyPrices = "";
   state.quickSearch.holdStock = "";
   state.quickSearch.remainingStocks = "";
   state.quickSearch.remainingHolds = "";
