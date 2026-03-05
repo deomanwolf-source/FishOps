@@ -2401,21 +2401,13 @@ function renderDailyPricesPage() {
       <tr data-fish-search="${escapeHtml(searchable)}">
         <td>${escapeHtml(fishLabel)}</td>
         <td><span class="chip ${sourceClass}">${sourceLabel}</span></td>
-        <td><input id="price-sell-${price.id}" class="table-input" type="number" step="0.01" value="${price.sell_price_per_unit}" ${
-          isHoldSource ? "disabled" : ""
-        } /></td>
-        <td><input id="price-cost-${price.id}" class="table-input" type="number" step="0.01" value="${price.cost_price_per_unit}" ${
-          isHoldSource ? "disabled" : ""
-        } /></td>
+        <td><input id="price-sell-${price.id}" class="table-input" type="number" step="0.01" value="${price.sell_price_per_unit}" /></td>
+        <td><input id="price-cost-${price.id}" class="table-input" type="number" step="0.01" value="${price.cost_price_per_unit}" /></td>
         <td>
-          ${
-            isHoldSource
-              ? '<span class="chip info">Managed in Hold Stock</span>'
-              : `<div class="table-actions">
+          <div class="table-actions">
             <button type="button" class="btn btn-primary price-save-btn" data-price-id="${price.id}">Save</button>
             <button type="button" class="btn btn-danger price-delete-btn" data-price-id="${price.id}">Delete</button>
-          </div>`
-          }
+          </div>
         </td>
       </tr>
     `;
@@ -2464,7 +2456,7 @@ function renderDailyPricesPage() {
     <section class="card wide">
       <div class="card-header">
         <h3>Daily Prices</h3>
-        <p class="page-note">Morning prices are editable here. Hold prices are shown separately by source.</p>
+        <p class="page-note">Morning and hold prices are shown separately by source and can be edited here.</p>
       </div>
       <div class="table-search">
         <input
