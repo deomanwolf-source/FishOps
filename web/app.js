@@ -415,6 +415,34 @@ function loadStore(overrideSnapshot = null) {
     }
   }
 
+  for (const row of DATA.daily_stock_entry) {
+    if (isIsoDate(row.auto_opening_from)) {
+      continue;
+    }
+
+    const openingQty = Math.max(0, round2(numberOr(row.opening_qty, 0)));
+    const purchaseQty = Math.max(0, round2(numberOr(row.purchase_qty, 0)));
+    if (openingQty <= 0 || purchaseQty > 0 || !isIsoDate(row.date)) {
+      continue;
+    }
+
+    const sourceDate = getYesterday(row.date);
+    const sourceRow = DATA.daily_stock_entry.find(
+      (entry) =>
+        entry.branch_id === row.branch_id &&
+        entry.date === sourceDate &&
+        entry.fish_id === row.fish_id
+    );
+    if (!sourceRow) {
+      continue;
+    }
+
+    const sourceClosing = Math.max(0, round2(numberOr(sourceRow.closing_qty, 0)));
+    if (sourceClosing > 0 && sourceClosing === openingQty) {
+      row.auto_opening_from = sourceDate;
+    }
+  }
+
   for (const row of DATA.hold_stock_entry) {
     if (!row.id) {
       row.id = makeId("HLD");
@@ -1561,21 +1589,39 @@ function buildSummary(branchId, dateText) {
     const sold = soldQty(entry);
     const price = priceByBranchFish.get(scopeKey);
     const holdCost = Math.max(0, round2(numberOr(holdCostByBranchFish.get(scopeKey), 0)));
-    const autoCarriedOpeningQty = isIsoDate(entry.auto_opening_from)
+    const sourceDate = isIsoDate(entry.auto_opening_from) ? entry.auto_opening_from : "";
+    const autoCarriedOpeningQty = sourceDate
       ? Math.max(0, round2(numberOr(entry.opening_qty, 0)))
       : 0;
-    const soldQtyForCost = Math.max(0, round2(sold - autoCarriedOpeningQty));
-    const yStockSoldQty = Math.max(0, round2(sold - soldQtyForCost));
-    let revenue = price ? round2(sold * price.sell_price_per_unit) : null;
-    let cost = price ? round2(soldQtyForCost * price.cost_price_per_unit) : null;
-    let profit = revenue !== null && cost !== null ? round2(revenue - cost) : null;
+    const yStockSoldQty = Math.max(0, Math.min(round2(sold), autoCarriedOpeningQty));
+    const normalSoldQty = Math.max(0, round2(sold - yStockSoldQty));
+
+    const yPrice =
+      yStockSoldQty > 0
+        ? getDailyPrice(setting.branch_id, sourceDate, setting.fish_id, "morning") || price
+        : null;
+
+    let yRevenue = yStockSoldQty > 0 ? (yPrice ? round2(yStockSoldQty * yPrice.sell_price_per_unit) : null) : 0;
+    let yCost = yStockSoldQty > 0 ? (yPrice ? round2(yStockSoldQty * yPrice.cost_price_per_unit) : null) : 0;
+    let yProfit = yRevenue !== null && yCost !== null ? round2(yRevenue - yCost) : null;
+
+    let normalRevenue = normalSoldQty > 0 ? (price ? round2(normalSoldQty * price.sell_price_per_unit) : null) : 0;
+    let normalCost = normalSoldQty > 0 ? (price ? round2(normalSoldQty * price.cost_price_per_unit) : null) : 0;
+    let normalProfit = normalRevenue !== null && normalCost !== null ? round2(normalRevenue - normalCost) : null;
 
     if (holdCost > 0) {
       appliedHoldKeys.add(scopeKey);
-      revenue = revenue === null ? 0 : revenue;
-      cost = round2(holdCost);
-      profit = round2(revenue - cost);
+      normalRevenue = normalRevenue === null ? 0 : normalRevenue;
+      normalCost = round2(holdCost);
+      normalProfit = round2(normalRevenue - normalCost);
     }
+
+    const hasMissingYPrice = yStockSoldQty > 0 && !yPrice;
+    const hasMissingNormalPrice = normalSoldQty > 0 && !price && holdCost <= 0;
+    const hasMissingPrice = hasMissingYPrice || hasMissingNormalPrice;
+    const revenue = hasMissingPrice ? null : round2(numberOr(yRevenue, 0) + numberOr(normalRevenue, 0));
+    const cost = hasMissingPrice ? null : round2(numberOr(yCost, 0) + numberOr(normalCost, 0));
+    const profit = hasMissingPrice ? null : round2(numberOr(yProfit, 0) + numberOr(normalProfit, 0));
 
     const closing = numberOr(entry.closing_qty, 0);
     const waste = numberOr(entry.waste_qty, 0);
@@ -1589,6 +1635,12 @@ function buildSummary(branchId, dateText) {
         entry,
         sold,
         yStock: yStockSoldQty,
+        yRevenue,
+        yCost,
+        yProfit,
+        normalRevenue,
+        normalCost,
+        normalProfit,
         closing,
         waste,
         orderQty: Math.max(0, round2(targetStock - closing)),
@@ -1596,7 +1648,7 @@ function buildSummary(branchId, dateText) {
         revenue,
         cost,
         profit,
-        priceMissing: !price
+        priceMissing: hasMissingPrice
       });
     } else {
       const fishKey = fish.id || setting.fish_id;
@@ -1608,6 +1660,12 @@ function buildSummary(branchId, dateText) {
           entry: null,
           sold: 0,
           yStock: 0,
+          yRevenue: 0,
+          yCost: 0,
+          yProfit: 0,
+          normalRevenue: 0,
+          normalCost: 0,
+          normalProfit: 0,
           closing: 0,
           waste: 0,
           orderQty: 0,
@@ -1625,6 +1683,12 @@ function buildSummary(branchId, dateText) {
 
       aggregated.sold = round2(aggregated.sold + sold);
       aggregated.yStock = round2(aggregated.yStock + yStockSoldQty);
+      aggregated.yRevenue = round2(numberOr(aggregated.yRevenue, 0) + numberOr(yRevenue, 0));
+      aggregated.yCost = round2(numberOr(aggregated.yCost, 0) + numberOr(yCost, 0));
+      aggregated.yProfit = round2(numberOr(aggregated.yProfit, 0) + numberOr(yProfit, 0));
+      aggregated.normalRevenue = round2(numberOr(aggregated.normalRevenue, 0) + numberOr(normalRevenue, 0));
+      aggregated.normalCost = round2(numberOr(aggregated.normalCost, 0) + numberOr(normalCost, 0));
+      aggregated.normalProfit = round2(numberOr(aggregated.normalProfit, 0) + numberOr(normalProfit, 0));
       aggregated.closing = round2(aggregated.closing + closing);
       aggregated.waste = round2(aggregated.waste + waste);
       aggregated._minStock = round2(aggregated._minStock + minStock);
@@ -1676,6 +1740,12 @@ function buildSummary(branchId, dateText) {
         entry: null,
         sold: 0,
         yStock: 0,
+        yRevenue: 0,
+        yCost: 0,
+        yProfit: 0,
+        normalRevenue: 0,
+        normalCost: round2(holdCost),
+        normalProfit: round2(-holdCost),
         closing: 0,
         waste: 0,
         orderQty: Math.max(0, round2(targetStock)),
@@ -1695,6 +1765,12 @@ function buildSummary(branchId, dateText) {
           entry: null,
           sold: 0,
           yStock: 0,
+          yRevenue: 0,
+          yCost: 0,
+          yProfit: 0,
+          normalRevenue: 0,
+          normalCost: 0,
+          normalProfit: 0,
           closing: 0,
           waste: 0,
           orderQty: 0,
@@ -1712,6 +1788,8 @@ function buildSummary(branchId, dateText) {
 
       aggregated._minStock = round2(aggregated._minStock + minStock);
       aggregated._targetStock = round2(aggregated._targetStock + targetStock);
+      aggregated.normalCost = round2(numberOr(aggregated.normalCost, 0) + holdCost);
+      aggregated.normalProfit = round2(numberOr(aggregated.normalProfit, 0) - holdCost);
       aggregated.cost = round2(aggregated.cost + holdCost);
       aggregated.profit = round2(aggregated.profit - holdCost);
       aggregated._hasPriceData = true;
@@ -1863,6 +1941,12 @@ function renderDailySummaryTable(rows) {
               <th>Fish</th>
               <th>Sold</th>
               <th>Y Stock</th>
+              <th>Y Revenue</th>
+              <th>Y Cost</th>
+              <th>Y Profit</th>
+              <th>Normal Revenue</th>
+              <th>Normal Cost</th>
+              <th>Normal Profit</th>
               <th>Closing</th>
               <th>Waste</th>
               <th>Revenue</th>
@@ -1874,7 +1958,7 @@ function renderDailySummaryTable(rows) {
           <tbody>
             ${
               rows.length === 0
-                ? '<tr><td colspan="9" class="empty-state">No stock entries for selected date.</td></tr>'
+                ? '<tr><td colspan="15" class="empty-state">No stock entries for selected date.</td></tr>'
                 : rows
                     .map(
                       (row) => `
@@ -1882,6 +1966,16 @@ function renderDailySummaryTable(rows) {
                           <td>${escapeHtml(row.fish.name)}</td>
                           <td>${row.sold.toFixed(2)} ${escapeHtml(row.fish.unit)}</td>
                           <td>${row.yStock.toFixed(2)} ${escapeHtml(row.fish.unit)}</td>
+                          <td>${row.yRevenue === null ? "-" : money(row.yRevenue)}</td>
+                          <td>${row.yCost === null ? "-" : money(row.yCost)}</td>
+                          <td class="${(row.yProfit || 0) >= 0 ? "profit-positive" : "profit-negative"}">${
+                            row.yProfit === null ? "-" : money(row.yProfit)
+                          }</td>
+                          <td>${row.normalRevenue === null ? "-" : money(row.normalRevenue)}</td>
+                          <td>${row.normalCost === null ? "-" : money(row.normalCost)}</td>
+                          <td class="${(row.normalProfit || 0) >= 0 ? "profit-positive" : "profit-negative"}">${
+                            row.normalProfit === null ? "-" : money(row.normalProfit)
+                          }</td>
                           <td>${row.closing.toFixed(2)} ${escapeHtml(row.fish.unit)}</td>
                           <td>${row.waste.toFixed(2)} ${escapeHtml(row.fish.unit)}</td>
                           <td>${row.revenue === null ? "-" : money(row.revenue)}</td>
@@ -4906,10 +5000,15 @@ function bindOpeningEvents() {
       }
       const openingQty = numberOr(row.querySelector(".opening-input")?.value, 0);
       const purchaseQty = numberOr(row.querySelector(".purchase-input")?.value, 0);
+      const existingEntry = getStockEntry(state.branchId, state.date, fishId);
+      const existingOpening = numberOr(existingEntry?.opening_qty, 0);
+      const existingAutoSource = String(existingEntry?.auto_opening_from || "");
+      const keepAutoSource =
+        isIsoDate(existingAutoSource) && round2(existingOpening) === round2(openingQty);
       upsertStockEntry(state.branchId, state.date, fishId, {
         opening_qty: openingQty,
         purchase_qty: purchaseQty,
-        auto_opening_from: ""
+        auto_opening_from: keepAutoSource ? existingAutoSource : ""
       });
     }
     saveStore();
