@@ -1385,8 +1385,8 @@ function buildSummary(branchId, dateText) {
 
     if (holdCost > 0) {
       appliedHoldKeys.add(scopeKey);
-      cost = round2(numberOr(cost, 0) + holdCost);
       revenue = revenue === null ? 0 : revenue;
+      cost = round2(holdCost);
       profit = round2(revenue - cost);
     }
 
