@@ -108,7 +108,7 @@ const PAGES = [
   { id: "branch_fish_settings", title: "Branch Fish Settings", permission: "set_branch_stock_levels" },
   { id: "daily_prices", title: "Daily Prices", permission: "set_daily_prices" },
   { id: "hold_stock", title: "Hold Stock", permission: "manage_hold_stock" },
-  { id: "remaining_stock_holds", title: "Remaining Stocks & Holds", permission: "manage_hold_stock" },
+  { id: "remaining_stock_holds", title: "Current Stocks & Holds", permission: "manage_hold_stock" },
   { id: "morning_opening_stock", title: "Morning Opening Stock", permission: "enter_opening_stock" },
   { id: "night_closing_stock", title: "Night Closing Stock", permission: "enter_closing_stock" },
   { id: "daily_summary", title: "Daily Summary", permission: "view_dashboard" },
@@ -1232,6 +1232,9 @@ function moveHoldEntryToOperationalStock(entry) {
   }
 
   const usableQty = Math.max(0, round2(numberOr(entry.usable_qty_kg, 0)));
+  const wasteQty = Math.max(0, round2(numberOr(entry.waste_qty_kg, 0)));
+  const fullQty = Math.max(0, round2(numberOr(entry.full_qty_kg, 0)));
+  const purchaseQtyToAdd = Math.max(round2(usableQty + wasteQty), fullQty);
   if (usableQty <= 0) {
     return "";
   }
@@ -1242,9 +1245,13 @@ function moveHoldEntryToOperationalStock(entry) {
   }
 
   const stockRow = getStockEntry(entry.branch_id, targetDate, entry.fish_id);
-  const currentOpening = numberOr(stockRow?.opening_qty, 0);
+  const currentPurchase = numberOr(stockRow?.purchase_qty, 0);
+  const currentClosing = numberOr(stockRow?.closing_qty, 0);
+  const currentWaste = numberOr(stockRow?.waste_qty, 0);
   upsertStockEntry(entry.branch_id, targetDate, entry.fish_id, {
-    opening_qty: round2(currentOpening + usableQty)
+    purchase_qty: round2(currentPurchase + purchaseQtyToAdd),
+    closing_qty: round2(currentClosing + usableQty),
+    waste_qty: round2(currentWaste + wasteQty)
   });
 
   upsertDailyPrice(
@@ -2306,7 +2313,7 @@ function renderHoldStockPage() {
         <input id="holdTotalCostInput" type="number" min="0" step="0.01" placeholder="Total cost (LKR)" required />
         <button class="btn btn-primary" type="submit">Add Stock</button>
       </form>
-      <p class="page-note">Workflow: Add Stock -> Cut -> Move. Table below shows today plus pending open holds from previous dates.</p>
+      <p class="page-note">Workflow: Add Stock -> Cut -> Move. Move updates same-day current stock, wastage, and daily prices.</p>
     </section>
 
     <section class="card wide">
@@ -2359,7 +2366,7 @@ function renderRemainingStockHoldsPage() {
   if (branchSet.size === 0) {
     return `
       <section class="card wide">
-        <div class="card-header"><h3>Remaining Stocks & Holds</h3></div>
+        <div class="card-header"><h3>Current Stocks & Holds</h3></div>
         <p class="empty-state">No branches available for this user.</p>
       </section>
     `;
@@ -2460,7 +2467,7 @@ function renderRemainingStockHoldsPage() {
 
   return `
     <section class="card wide section-gap">
-      <div class="card-header"><h3>Remaining Stock (${escapeHtml(state.date)})</h3></div>
+      <div class="card-header"><h3>Current Stock (${escapeHtml(state.date)})</h3></div>
       <div class="table-search">
         <input
           id="remainingStocksSearchInput"
@@ -2476,7 +2483,7 @@ function renderRemainingStockHoldsPage() {
             <tr>
               <th>Fish</th>
               <th>Branch</th>
-              <th>Remaining Kg</th>
+              <th>Current Kg</th>
               <th>Waste Kg</th>
               <th>Min Stock</th>
               <th>Target Stock</th>
@@ -2486,7 +2493,7 @@ function renderRemainingStockHoldsPage() {
           <tbody id="remainingStocksTableBody">
             ${
               remainingRows ||
-              '<tr><td colspan="7" class="empty-state">No remaining stock for selected date.</td></tr>'
+              '<tr><td colspan="7" class="empty-state">No current stock for selected date.</td></tr>'
             }
             ${
               remainingRows
@@ -4504,7 +4511,7 @@ function bindHoldStockEvents() {
       }
       saveStore();
       renderApp();
-      alert(`Hold stock moved to opening stock for ${moved} with daily price updated.`);
+      alert(`Hold stock moved to current stock for ${moved}. Closing/waste and daily price updated.`);
     });
   });
 
