@@ -2097,17 +2097,40 @@ function renderDailyPricesPage() {
     `;
     });
   const rows = priceRows.join("");
+  const priceFishOptions = DATA.fish_profiles
+    .filter((fish) => fish.status === "active")
+    .map((fish) => {
+      const fishCode = String(fish.fish_code || "").trim();
+      const fishName = String(fish.name || "").trim();
+      const displayName = fishName || fishCode;
+      const displayCode = fishCode || fishName;
+      if (!displayName) {
+        return "";
+      }
+
+      const label = `${escapeHtml(displayName)} (${escapeHtml(displayCode)})`;
+      const codeOption = fishCode ? `<option value="${escapeHtml(fishCode)}">${label}</option>` : "";
+      const nameOption =
+        fishName && fishName.toLowerCase() !== fishCode.toLowerCase()
+          ? `<option value="${escapeHtml(fishName)}">${label}</option>`
+          : "";
+
+      return `${codeOption}${nameOption}`;
+    })
+    .join("");
 
   return `
     <section class="card section-gap">
       <div class="card-header"><h3>Set Daily Price (${escapeHtml(state.date)})</h3></div>
       <form id="priceUpsertForm" class="form-grid compact">
-        <select id="priceFishId">
-          ${DATA.fish_profiles
-            .filter((fish) => fish.status === "active")
-            .map((fish) => `<option value="${fish.id}">${escapeHtml(fish.name)}</option>`)
-            .join("")}
-        </select>
+        <input
+          id="priceFishInput"
+          list="priceFishList"
+          type="text"
+          placeholder="Fish code or name (e.g. F-0001)"
+          required
+        />
+        <datalist id="priceFishList">${priceFishOptions}</datalist>
         <input id="priceSellInput" type="number" step="0.01" placeholder="Sell price" required />
         <input id="priceCostInput" type="number" step="0.01" placeholder="Cost price" required />
         <button class="btn btn-primary" type="submit">Save Price</button>
@@ -4289,14 +4312,21 @@ function bindDailyPricesEvents() {
   const form = document.getElementById("priceUpsertForm");
   form?.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const fishId = document.getElementById("priceFishId")?.value;
+    const fishSearchText = document.getElementById("priceFishInput")?.value;
+    const fish = findFishByCodeOrName(fishSearchText);
     const sell = numberOr(document.getElementById("priceSellInput")?.value, 0);
     const cost = numberOr(document.getElementById("priceCostInput")?.value, 0);
 
-    if (!fishId) {
-      alert("Select fish.");
+    if (!fish) {
+      alert("Fish code/name not found.");
       return;
     }
+    if (fish.status !== "active") {
+      alert("Selected fish is inactive.");
+      return;
+    }
+
+    const fishId = fish.id;
     upsertDailyPrice(state.branchId, state.date, fishId, sell, cost);
     saveStore();
     renderApp();
