@@ -403,6 +403,7 @@ function loadStore(overrideSnapshot = null) {
     if (typeof row.auto_price_from !== "string") {
       row.auto_price_from = "";
     }
+    row.price_source = normalizePriceSource(row.price_source);
   }
 
   for (const row of DATA.daily_stock_entry) {
@@ -511,13 +512,14 @@ function loadStore(overrideSnapshot = null) {
       continue;
     }
 
-    const hasNextDayPrice = DATA.daily_prices.some(
+    const hasNextDayMorningPrice = DATA.daily_prices.some(
       (row) =>
         row.branch_id === stockRow.branch_id &&
         row.date === stockRow.date &&
-        row.fish_id === stockRow.fish_id
+        row.fish_id === stockRow.fish_id &&
+        normalizePriceSource(row.price_source) === "morning"
     );
-    if (hasNextDayPrice) {
+    if (hasNextDayMorningPrice) {
       continue;
     }
 
@@ -538,7 +540,8 @@ function loadStore(overrideSnapshot = null) {
       fish_id: stockRow.fish_id,
       sell_price_per_unit: Math.round(numberOr(sourcePrice.sell_price_per_unit, 0)),
       cost_price_per_unit: Math.round(numberOr(sourcePrice.cost_price_per_unit, 0)),
-      auto_price_from: sourceDate
+      auto_price_from: sourceDate,
+      price_source: "morning"
     });
   }
 
@@ -1208,6 +1211,11 @@ function getTomorrow(dateText) {
   return shiftIsoDate(dateText, 1);
 }
 
+function normalizePriceSource(value) {
+  const source = String(value || "").trim().toLowerCase();
+  return source === "hold" ? "hold" : "morning";
+}
+
 function getStockEntry(branchId, dateText, fishId) {
   return DATA.daily_stock_entry.find(
     (entry) =>
@@ -1294,7 +1302,7 @@ function autoCarryClosingToNextDay(branchId, sourceDate) {
       continue;
     }
 
-    const nextPrice = getDailyPrice(branchId, nextDate, source.fish_id);
+    const nextPrice = getDailyPrice(branchId, nextDate, source.fish_id, "morning");
     const nextAutoSource = String(nextPrice?.auto_price_from || "");
     const nextHasNoValues =
       numberOr(nextPrice?.sell_price_per_unit, 0) === 0 &&
@@ -1312,16 +1320,31 @@ function autoCarryClosingToNextDay(branchId, sourceDate) {
       source.fish_id,
       Math.round(numberOr(sourcePrice.sell_price_per_unit, 0)),
       Math.round(numberOr(sourcePrice.cost_price_per_unit, 0)),
-      { auto_price_from: sourceDate }
+      { auto_price_from: sourceDate, price_source: "morning" }
     );
   }
 
   return { nextDate, movedCount };
 }
 
-function getDailyPrice(branchId, dateText, fishId) {
-  return DATA.daily_prices.find(
+function getDailyPrice(branchId, dateText, fishId, source = "") {
+  const rows = DATA.daily_prices.filter(
     (row) => row.branch_id === branchId && row.date === dateText && row.fish_id === fishId
+  );
+  if (rows.length === 0) {
+    return null;
+  }
+
+  const normalizedSource = normalizePriceSource(source);
+  if (source) {
+    return rows.find((row) => normalizePriceSource(row.price_source) === normalizedSource) || null;
+  }
+
+  return (
+    rows.find((row) => normalizePriceSource(row.price_source) === "morning") ||
+    rows.find((row) => normalizePriceSource(row.price_source) === "hold") ||
+    rows[0] ||
+    null
   );
 }
 
@@ -1332,7 +1355,8 @@ function upsertDailyPrice(branchId, dateText, fishId, sellPrice, costPrice, opti
 
   const hasAutoSource = Object.prototype.hasOwnProperty.call(options, "auto_price_from");
   const autoPriceFrom = hasAutoSource ? String(options.auto_price_from || "") : undefined;
-  let row = getDailyPrice(branchId, dateText, fishId);
+  const priceSource = normalizePriceSource(options.price_source);
+  let row = getDailyPrice(branchId, dateText, fishId, priceSource);
   if (!row) {
     row = {
       id: makeId("PRC"),
@@ -1341,12 +1365,14 @@ function upsertDailyPrice(branchId, dateText, fishId, sellPrice, costPrice, opti
       fish_id: fishId,
       sell_price_per_unit: sellPrice,
       cost_price_per_unit: costPrice,
-      auto_price_from: autoPriceFrom === undefined ? "" : autoPriceFrom
+      auto_price_from: autoPriceFrom === undefined ? "" : autoPriceFrom,
+      price_source: priceSource
     };
     DATA.daily_prices.push(row);
   } else {
     row.sell_price_per_unit = sellPrice;
     row.cost_price_per_unit = costPrice;
+    row.price_source = priceSource;
     if (autoPriceFrom !== undefined) {
       row.auto_price_from = autoPriceFrom;
     }
@@ -1403,7 +1429,7 @@ function moveHoldEntryToOperationalStock(entry) {
     entry.fish_id,
     Math.round(numberOr(entry.sell_price_per_kg, 0)),
     Math.round(numberOr(entry.cost_per_kg, 0)),
-    { auto_price_from: "" }
+    { auto_price_from: "", price_source: "hold" }
   );
 
   entry.status = "moved";
@@ -1470,9 +1496,21 @@ function buildSummary(branchId, dateText) {
     (entry) => branchSet.has(entry.branch_id) && entry.date === dateText
   );
 
-  const priceByBranchFish = new Map(
-    prices.map((row) => [`${row.branch_id}::${row.fish_id}`, row])
-  );
+  const priceByBranchFish = new Map();
+  for (const row of prices) {
+    const key = `${row.branch_id}::${row.fish_id}`;
+    const existing = priceByBranchFish.get(key);
+    if (!existing) {
+      priceByBranchFish.set(key, row);
+      continue;
+    }
+
+    const existingSource = normalizePriceSource(existing.price_source);
+    const nextSource = normalizePriceSource(row.price_source);
+    if (existingSource !== "morning" && nextSource === "morning") {
+      priceByBranchFish.set(key, row);
+    }
+  }
   const entryByBranchFish = new Map(
     entries.map((row) => [`${row.branch_id}::${row.fish_id}`, row])
   );
@@ -2240,21 +2278,50 @@ function renderDailyPricesPage() {
 
   const priceRows = DATA.daily_prices
     .filter((row) => row.branch_id === state.branchId && row.date === state.date)
+    .sort((a, b) => {
+      const aFish = findFishById(a.fish_id);
+      const bFish = findFishById(b.fish_id);
+      const byFish = String(aFish?.name || a.fish_id || "").localeCompare(String(bFish?.name || b.fish_id || ""));
+      if (byFish !== 0) {
+        return byFish;
+      }
+      const aSource = normalizePriceSource(a.price_source);
+      const bSource = normalizePriceSource(b.price_source);
+      if (aSource === bSource) {
+        return 0;
+      }
+      return aSource === "morning" ? -1 : 1;
+    })
     .map((price) => {
       const fish = findFishById(price.fish_id);
+      const source = normalizePriceSource(price.price_source);
+      const isHoldSource = source === "hold";
       const isRemainingPrice = isIsoDate(price.auto_price_from);
       const fishLabel = `${fishDisplayLabel(fish, price.fish_id)}${isRemainingPrice ? " (remaining)" : ""}`;
-      const searchable = `${fishSearchText(fish, price.fish_id)} ${isRemainingPrice ? "remaining" : ""}`.trim();
+      const sourceLabel = isHoldSource ? "HOLD" : isRemainingPrice ? "MORNING (REMAINING)" : "MORNING";
+      const sourceClass = isHoldSource ? "warning" : isRemainingPrice ? "info" : "ok";
+      const searchable = `${fishSearchText(fish, price.fish_id)} ${isRemainingPrice ? "remaining" : ""} ${
+        isHoldSource ? "hold" : "morning"
+      }`.trim();
       return `
       <tr data-fish-search="${escapeHtml(searchable)}">
         <td>${escapeHtml(fishLabel)}</td>
-        <td><input id="price-sell-${price.id}" class="table-input" type="number" step="0.01" value="${price.sell_price_per_unit}" /></td>
-        <td><input id="price-cost-${price.id}" class="table-input" type="number" step="0.01" value="${price.cost_price_per_unit}" /></td>
+        <td><span class="chip ${sourceClass}">${sourceLabel}</span></td>
+        <td><input id="price-sell-${price.id}" class="table-input" type="number" step="0.01" value="${price.sell_price_per_unit}" ${
+          isHoldSource ? "disabled" : ""
+        } /></td>
+        <td><input id="price-cost-${price.id}" class="table-input" type="number" step="0.01" value="${price.cost_price_per_unit}" ${
+          isHoldSource ? "disabled" : ""
+        } /></td>
         <td>
-          <div class="table-actions">
+          ${
+            isHoldSource
+              ? '<span class="chip info">Managed in Hold Stock</span>'
+              : `<div class="table-actions">
             <button type="button" class="btn btn-primary price-save-btn" data-price-id="${price.id}">Save</button>
             <button type="button" class="btn btn-danger price-delete-btn" data-price-id="${price.id}">Delete</button>
-          </div>
+          </div>`
+          }
         </td>
       </tr>
     `;
@@ -2303,7 +2370,7 @@ function renderDailyPricesPage() {
     <section class="card wide">
       <div class="card-header">
         <h3>Daily Prices</h3>
-        <p class="page-note">Set sell and cost prices manually for the selected date.</p>
+        <p class="page-note">Morning prices are editable here. Hold prices are shown separately by source.</p>
       </div>
       <div class="table-search">
         <input
@@ -2319,16 +2386,17 @@ function renderDailyPricesPage() {
           <thead>
             <tr>
               <th>Fish</th>
+              <th>Source</th>
               <th>Sell Price</th>
               <th>Cost Price</th>
               <th>Actions</th>
             </tr>
           </thead>
           <tbody id="dailyPricesTableBody">
-            ${rows || '<tr><td colspan="4" class="empty-state">No prices set for this date.</td></tr>'}
+            ${rows || '<tr><td colspan="5" class="empty-state">No prices set for this date.</td></tr>'}
             ${
               rows
-                ? '<tr id="dailyPricesSearchEmptyRow" class="hidden"><td colspan="4" class="empty-state">No fish match your search.</td></tr>'
+                ? '<tr id="dailyPricesSearchEmptyRow" class="hidden"><td colspan="5" class="empty-state">No fish match your search.</td></tr>'
                 : ""
             }
           </tbody>
@@ -2364,7 +2432,7 @@ function renderYDailyPricesPage() {
     })
     .map((entry) => {
       const fish = findFishById(entry.fish_id);
-      const price = getDailyPrice(state.branchId, state.date, entry.fish_id) || null;
+      const price = getDailyPrice(state.branchId, state.date, entry.fish_id, "morning") || null;
       const hasPrice = Boolean(price);
       const searchable = `${fishSearchText(fish, entry.fish_id)} ${sourceDate}`.trim();
 
@@ -3560,11 +3628,14 @@ function copyYesterdayPrices() {
   }
   const sourceDate = getYesterday(state.date);
   const sourceRows = DATA.daily_prices.filter(
-    (row) => row.branch_id === state.branchId && row.date === sourceDate
+    (row) =>
+      row.branch_id === state.branchId &&
+      row.date === sourceDate &&
+      normalizePriceSource(row.price_source) === "morning"
   );
   let copied = 0;
   for (const source of sourceRows) {
-    const existing = getDailyPrice(state.branchId, state.date, source.fish_id);
+    const existing = getDailyPrice(state.branchId, state.date, source.fish_id, "morning");
     if (!existing) {
       DATA.daily_prices.push({
         id: makeId("PRC"),
@@ -3572,7 +3643,9 @@ function copyYesterdayPrices() {
         branch_id: state.branchId,
         fish_id: source.fish_id,
         sell_price_per_unit: source.sell_price_per_unit,
-        cost_price_per_unit: source.cost_price_per_unit
+        cost_price_per_unit: source.cost_price_per_unit,
+        auto_price_from: "",
+        price_source: "morning"
       });
       copied += 1;
     }
@@ -4576,7 +4649,10 @@ function bindDailyPricesEvents() {
     }
 
     const fishId = fish.id;
-    upsertDailyPrice(state.branchId, state.date, fishId, sell, cost, { auto_price_from: "" });
+    upsertDailyPrice(state.branchId, state.date, fishId, sell, cost, {
+      auto_price_from: "",
+      price_source: "morning"
+    });
     saveStore();
     renderApp();
   });
@@ -4596,6 +4672,7 @@ function bindDailyPricesEvents() {
       price.sell_price_per_unit = sell;
       price.cost_price_per_unit = cost;
       price.auto_price_from = "";
+      price.price_source = "morning";
       saveStore();
       renderApp();
     });
