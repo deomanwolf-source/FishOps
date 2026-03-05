@@ -1987,16 +1987,39 @@ function renderBranchFishSettingsPage() {
       `;
     });
   const rows = settingsRows.join("");
+  const settingFishOptions = DATA.fish_profiles
+    .map((fish) => {
+      const fishCode = String(fish.fish_code || "").trim();
+      const fishName = String(fish.name || "").trim();
+      const displayName = fishName || fishCode;
+      const displayCode = fishCode || fishName;
+      if (!displayName) {
+        return "";
+      }
+
+      const label = `${escapeHtml(displayName)} (${escapeHtml(displayCode)})`;
+      const codeOption = fishCode ? `<option value="${escapeHtml(fishCode)}">${label}</option>` : "";
+      const nameOption =
+        fishName && fishName.toLowerCase() !== fishCode.toLowerCase()
+          ? `<option value="${escapeHtml(fishName)}">${label}</option>`
+          : "";
+
+      return `${codeOption}${nameOption}`;
+    })
+    .join("");
 
   return `
     <section class="card section-gap">
       <div class="card-header"><h3>Set Branch Stock Levels (${escapeHtml(state.branchId)})</h3></div>
       <form id="settingCreateForm" class="form-grid compact">
-        <select id="newSettingFishId">
-          ${DATA.fish_profiles
-            .map((fish) => `<option value="${fish.id}">${escapeHtml(fish.name)}</option>`)
-            .join("")}
-        </select>
+        <input
+          id="newSettingFishInput"
+          list="newSettingFishList"
+          type="text"
+          placeholder="Fish code or name (e.g. F-0001)"
+          required
+        />
+        <datalist id="newSettingFishList">${settingFishOptions}</datalist>
         <input id="newSettingMin" type="number" step="0.01" placeholder="Min stock" required />
         <input id="newSettingTarget" type="number" step="0.01" placeholder="Target stock" required />
         <select id="newSettingActive">
@@ -4186,15 +4209,18 @@ function bindBranchSettingsEvents() {
   const createForm = document.getElementById("settingCreateForm");
   createForm?.addEventListener("submit", (event) => {
     event.preventDefault();
-    const fishId = document.getElementById("newSettingFishId")?.value;
+    const fishSearchText = document.getElementById("newSettingFishInput")?.value;
+    const fish = findFishByCodeOrName(fishSearchText);
     const minStock = numberOr(document.getElementById("newSettingMin")?.value, 0);
     const targetStock = numberOr(document.getElementById("newSettingTarget")?.value, 0);
     const isActive = (document.getElementById("newSettingActive")?.value || "true") === "true";
 
-    if (!fishId) {
-      alert("Select fish.");
+    if (!fish) {
+      alert("Fish code/name not found.");
       return;
     }
+
+    const fishId = fish.id;
     if (targetStock < minStock) {
       alert("Target stock should be greater than or equal to min stock.");
       return;
