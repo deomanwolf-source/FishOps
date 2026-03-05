@@ -398,6 +398,9 @@ function loadStore(overrideSnapshot = null) {
     if (!row.id) {
       row.id = makeId("PRC");
     }
+    if (typeof row.auto_price_from !== "string") {
+      row.auto_price_from = "";
+    }
   }
 
   for (const row of DATA.daily_stock_entry) {
@@ -498,6 +501,43 @@ function loadStore(overrideSnapshot = null) {
       stockRow.closing_qty = round2(totals.closingQty);
       stockRow.waste_qty = round2(totals.wasteQty);
     }
+  }
+
+  for (const stockRow of DATA.daily_stock_entry) {
+    const sourceDate = String(stockRow.auto_opening_from || "");
+    if (!isIsoDate(sourceDate) || numberOr(stockRow.opening_qty, 0) <= 0) {
+      continue;
+    }
+
+    const hasNextDayPrice = DATA.daily_prices.some(
+      (row) =>
+        row.branch_id === stockRow.branch_id &&
+        row.date === stockRow.date &&
+        row.fish_id === stockRow.fish_id
+    );
+    if (hasNextDayPrice) {
+      continue;
+    }
+
+    const sourcePrice = DATA.daily_prices.find(
+      (row) =>
+        row.branch_id === stockRow.branch_id &&
+        row.date === sourceDate &&
+        row.fish_id === stockRow.fish_id
+    );
+    if (!sourcePrice) {
+      continue;
+    }
+
+    DATA.daily_prices.push({
+      id: makeId("PRC"),
+      date: stockRow.date,
+      branch_id: stockRow.branch_id,
+      fish_id: stockRow.fish_id,
+      sell_price_per_unit: Math.round(numberOr(sourcePrice.sell_price_per_unit, 0)),
+      cost_price_per_unit: Math.round(numberOr(sourcePrice.cost_price_per_unit, 0)),
+      auto_price_from: sourceDate
+    });
   }
 
   if (!DATA.users.some((user) => user.role === "master")) {
@@ -1211,6 +1251,7 @@ function autoCarryClosingToNextDay(branchId, sourceDate) {
   for (const source of sourceRows) {
     const closingQty = Math.max(0, round2(numberOr(source.closing_qty, 0)));
     const nextRow = getStockEntry(branchId, nextDate, source.fish_id);
+    let carried = false;
 
     if (!nextRow) {
       DATA.daily_stock_entry.push({
@@ -1225,21 +1266,52 @@ function autoCarryClosingToNextDay(branchId, sourceDate) {
         auto_opening_from: sourceDate
       });
       movedCount += 1;
+      carried = true;
+    } else {
+      const autoSource = String(nextRow.auto_opening_from || "");
+      const canAutoUpdate =
+        autoSource === sourceDate ||
+        (numberOr(nextRow.opening_qty, 0) === 0 && isStockRowUntouchedForAutoCarry(nextRow));
+
+      if (!canAutoUpdate) {
+        continue;
+      }
+
+      nextRow.opening_qty = closingQty;
+      nextRow.auto_opening_from = sourceDate;
+      movedCount += 1;
+      carried = true;
+    }
+
+    if (!carried || closingQty <= 0) {
       continue;
     }
 
-    const autoSource = String(nextRow.auto_opening_from || "");
-    const canAutoUpdate =
-      autoSource === sourceDate ||
-      (numberOr(nextRow.opening_qty, 0) === 0 && isStockRowUntouchedForAutoCarry(nextRow));
-
-    if (!canAutoUpdate) {
+    const sourcePrice = getDailyPrice(branchId, sourceDate, source.fish_id);
+    if (!sourcePrice) {
       continue;
     }
 
-    nextRow.opening_qty = closingQty;
-    nextRow.auto_opening_from = sourceDate;
-    movedCount += 1;
+    const nextPrice = getDailyPrice(branchId, nextDate, source.fish_id);
+    const nextAutoSource = String(nextPrice?.auto_price_from || "");
+    const nextHasNoValues =
+      numberOr(nextPrice?.sell_price_per_unit, 0) === 0 &&
+      numberOr(nextPrice?.cost_price_per_unit, 0) === 0;
+    const canAutoPriceUpdate =
+      !nextPrice || nextAutoSource === sourceDate || (nextAutoSource === "" && nextHasNoValues);
+
+    if (!canAutoPriceUpdate) {
+      continue;
+    }
+
+    upsertDailyPrice(
+      branchId,
+      nextDate,
+      source.fish_id,
+      Math.round(numberOr(sourcePrice.sell_price_per_unit, 0)),
+      Math.round(numberOr(sourcePrice.cost_price_per_unit, 0)),
+      { auto_price_from: sourceDate }
+    );
   }
 
   return { nextDate, movedCount };
@@ -1251,11 +1323,13 @@ function getDailyPrice(branchId, dateText, fishId) {
   );
 }
 
-function upsertDailyPrice(branchId, dateText, fishId, sellPrice, costPrice) {
+function upsertDailyPrice(branchId, dateText, fishId, sellPrice, costPrice, options = {}) {
   if (!ensureWriteAllowed()) {
     return null;
   }
 
+  const hasAutoSource = Object.prototype.hasOwnProperty.call(options, "auto_price_from");
+  const autoPriceFrom = hasAutoSource ? String(options.auto_price_from || "") : undefined;
   let row = getDailyPrice(branchId, dateText, fishId);
   if (!row) {
     row = {
@@ -1264,13 +1338,19 @@ function upsertDailyPrice(branchId, dateText, fishId, sellPrice, costPrice) {
       branch_id: branchId,
       fish_id: fishId,
       sell_price_per_unit: sellPrice,
-      cost_price_per_unit: costPrice
+      cost_price_per_unit: costPrice,
+      auto_price_from: autoPriceFrom === undefined ? "" : autoPriceFrom
     };
     DATA.daily_prices.push(row);
   } else {
     row.sell_price_per_unit = sellPrice;
     row.cost_price_per_unit = costPrice;
+    if (autoPriceFrom !== undefined) {
+      row.auto_price_from = autoPriceFrom;
+    }
   }
+
+  return row;
 }
 
 function moveHoldEntryToOperationalStock(entry) {
@@ -1320,7 +1400,8 @@ function moveHoldEntryToOperationalStock(entry) {
     targetDate,
     entry.fish_id,
     Math.round(numberOr(entry.sell_price_per_kg, 0)),
-    Math.round(numberOr(entry.cost_per_kg, 0))
+    Math.round(numberOr(entry.cost_per_kg, 0)),
+    { auto_price_from: "" }
   );
 
   entry.status = "moved";
@@ -2151,8 +2232,9 @@ function renderDailyPricesPage() {
     .filter((row) => row.branch_id === state.branchId && row.date === state.date)
     .map((price) => {
       const fish = findFishById(price.fish_id);
-      const fishLabel = fishDisplayLabel(fish, price.fish_id);
-      const searchable = fishSearchText(fish, price.fish_id);
+      const isRemainingPrice = isIsoDate(price.auto_price_from);
+      const fishLabel = `${fishDisplayLabel(fish, price.fish_id)}${isRemainingPrice ? " (remaining)" : ""}`;
+      const searchable = `${fishSearchText(fish, price.fish_id)} ${isRemainingPrice ? "remaining" : ""}`.trim();
       return `
       <tr data-fish-search="${escapeHtml(searchable)}">
         <td>${escapeHtml(fishLabel)}</td>
@@ -4398,7 +4480,7 @@ function bindDailyPricesEvents() {
     }
 
     const fishId = fish.id;
-    upsertDailyPrice(state.branchId, state.date, fishId, sell, cost);
+    upsertDailyPrice(state.branchId, state.date, fishId, sell, cost, { auto_price_from: "" });
     saveStore();
     renderApp();
   });
@@ -4417,6 +4499,7 @@ function bindDailyPricesEvents() {
       const cost = numberOr(document.getElementById(`price-cost-${priceId}`)?.value, price.cost_price_per_unit);
       price.sell_price_per_unit = sell;
       price.cost_price_per_unit = cost;
+      price.auto_price_from = "";
       saveStore();
       renderApp();
     });
