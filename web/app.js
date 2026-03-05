@@ -1379,8 +1379,12 @@ function buildSummary(branchId, dateText) {
     const sold = soldQty(entry);
     const price = priceByBranchFish.get(scopeKey);
     const holdCost = Math.max(0, round2(numberOr(holdCostByBranchFish.get(scopeKey), 0)));
+    const autoCarriedOpeningQty = isIsoDate(entry.auto_opening_from)
+      ? Math.max(0, round2(numberOr(entry.opening_qty, 0)))
+      : 0;
+    const soldQtyForCost = Math.max(0, round2(sold - autoCarriedOpeningQty));
     let revenue = price ? round2(sold * price.sell_price_per_unit) : null;
-    let cost = price ? round2(sold * price.cost_price_per_unit) : null;
+    let cost = price ? round2(soldQtyForCost * price.cost_price_per_unit) : null;
     let profit = revenue !== null && cost !== null ? round2(revenue - cost) : null;
 
     if (holdCost > 0) {
