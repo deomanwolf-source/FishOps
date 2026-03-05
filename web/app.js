@@ -449,6 +449,57 @@ function loadStore(overrideSnapshot = null) {
     }
   }
 
+  const movedHoldTotalsByStockKey = new Map();
+  for (const row of DATA.hold_stock_entry) {
+    if (String(row.status || "").toLowerCase() !== "moved") {
+      continue;
+    }
+
+    const targetDate = isIsoDate(row.moved_to_date) ? row.moved_to_date : String(row.date || "");
+    if (!targetDate) {
+      continue;
+    }
+
+    const usableQty = Math.max(0, round2(numberOr(row.usable_qty_kg, 0)));
+    const wasteQty = Math.max(0, round2(numberOr(row.waste_qty_kg, 0)));
+    const fullQty = Math.max(0, round2(numberOr(row.full_qty_kg, 0)));
+    const purchaseQty = Math.max(round2(usableQty + wasteQty), fullQty);
+    const stockKey = `${row.branch_id}::${targetDate}::${row.fish_id}`;
+    const existing = movedHoldTotalsByStockKey.get(stockKey) || {
+      purchaseQty: 0,
+      closingQty: 0,
+      wasteQty: 0
+    };
+
+    existing.purchaseQty = round2(existing.purchaseQty + purchaseQty);
+    existing.closingQty = round2(existing.closingQty + usableQty);
+    existing.wasteQty = round2(existing.wasteQty + wasteQty);
+    movedHoldTotalsByStockKey.set(stockKey, existing);
+  }
+
+  for (const [stockKey, totals] of movedHoldTotalsByStockKey.entries()) {
+    const [branchId, dateText, fishId] = stockKey.split("::");
+    if (!branchId || !dateText || !fishId) {
+      continue;
+    }
+
+    const stockRow = DATA.daily_stock_entry.find(
+      (entry) => entry.branch_id === branchId && entry.date === dateText && entry.fish_id === fishId
+    );
+    if (!stockRow) {
+      continue;
+    }
+
+    const openingQty = Math.max(0, round2(numberOr(stockRow.opening_qty, 0)));
+    const purchaseQty = Math.max(0, round2(numberOr(stockRow.purchase_qty, 0)));
+
+    if (openingQty === 0 && purchaseQty === 0) {
+      stockRow.purchase_qty = round2(totals.purchaseQty);
+      stockRow.closing_qty = round2(totals.closingQty);
+      stockRow.waste_qty = round2(totals.wasteQty);
+    }
+  }
+
   if (!DATA.users.some((user) => user.role === "master")) {
     DATA.users.unshift(base.data.users[0]);
   }
@@ -1245,13 +1296,23 @@ function moveHoldEntryToOperationalStock(entry) {
   }
 
   const stockRow = getStockEntry(entry.branch_id, targetDate, entry.fish_id);
+  const currentOpening = numberOr(stockRow?.opening_qty, 0);
   const currentPurchase = numberOr(stockRow?.purchase_qty, 0);
   const currentClosing = numberOr(stockRow?.closing_qty, 0);
   const currentWaste = numberOr(stockRow?.waste_qty, 0);
+  const shouldResetStaleCurrent =
+    currentOpening === 0 && currentPurchase === 0 && (currentClosing > 0 || currentWaste > 0);
+
+  const nextPurchase = shouldResetStaleCurrent
+    ? purchaseQtyToAdd
+    : round2(currentPurchase + purchaseQtyToAdd);
+  const nextClosing = shouldResetStaleCurrent ? usableQty : round2(currentClosing + usableQty);
+  const nextWaste = shouldResetStaleCurrent ? wasteQty : round2(currentWaste + wasteQty);
+
   upsertStockEntry(entry.branch_id, targetDate, entry.fish_id, {
-    purchase_qty: round2(currentPurchase + purchaseQtyToAdd),
-    closing_qty: round2(currentClosing + usableQty),
-    waste_qty: round2(currentWaste + wasteQty)
+    purchase_qty: nextPurchase,
+    closing_qty: nextClosing,
+    waste_qty: nextWaste
   });
 
   upsertDailyPrice(
