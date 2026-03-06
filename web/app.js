@@ -3475,8 +3475,15 @@ function renderDeleteDataPage() {
     0,
     DATA.users.filter((user) => user.role !== "master").length
   );
+  const dailyEnteredDetailsCount =
+    DATA.daily_prices.length + DATA.daily_stock_entry.length + DATA.hold_stock_entry.length;
 
   const categories = [
+    {
+      key: "daily_entered_details",
+      label: "All Daily Entered Details (keep Fish Profiles + Branch Fish Settings)",
+      count: dailyEnteredDetailsCount
+    },
     { key: "daily_prices", label: "Daily Prices", count: DATA.daily_prices.length },
     { key: "daily_stock_entry", label: "Daily Stock Entries", count: DATA.daily_stock_entry.length },
     { key: "hold_stock_entry", label: "Hold Stock Entries", count: DATA.hold_stock_entry.length },
@@ -3519,6 +3526,7 @@ function renderDeleteDataPage() {
                         type="button"
                         class="btn btn-danger delete-category-btn"
                         data-category="${row.key}"
+                        data-label="${escapeHtml(row.label)}"
                       >
                         Delete
                       </button>
@@ -5298,6 +5306,11 @@ function deleteDataByCategory(category) {
   }
 
   switch (category) {
+    case "daily_entered_details":
+      DATA.daily_prices = [];
+      DATA.daily_stock_entry = [];
+      DATA.hold_stock_entry = [];
+      break;
     case "daily_prices":
       DATA.daily_prices = [];
       break;
@@ -5390,8 +5403,9 @@ function bindDeleteDataEvents() {
       if (!category) {
         return;
       }
+      const categoryLabel = button.getAttribute("data-label") || category;
 
-      const ok = window.confirm(`Delete category "${category}"?`);
+      const ok = window.confirm(`Delete category "${categoryLabel}"?`);
       if (!ok) {
         return;
       }
