@@ -1205,8 +1205,10 @@ function calculateHoldStockMetrics(fullKg, wasteKg, totalCost, profitMarginPerKg
   const usableQty = Math.max(0, round2(fullQty - wasteQty));
   const totalCostLkr = Math.max(0, round2(numberOr(totalCost, 0)));
   const marginPerKgLkr = Math.max(0, round2(numberOr(profitMarginPerKg, 0)));
+  const totalProfitLkr = round2(fullQty * marginPerKgLkr);
   const costPerKgLkr = usableQty > 0 ? Math.round(totalCostLkr / usableQty) : 0;
-  const sellPricePerKgLkr = Math.round(costPerKgLkr + marginPerKgLkr);
+  const sellPricePerKgLkr =
+    usableQty > 0 ? Math.round((totalCostLkr + totalProfitLkr) / usableQty) : 0;
 
   return {
     fullQty,
@@ -1545,7 +1547,17 @@ function buildSummary(branchId, dateText) {
   const holdCostByBranchFish = new Map();
 
   for (const holdRow of DATA.hold_stock_entry) {
-    if (!branchSet.has(holdRow.branch_id) || holdRow.date !== dateText) {
+    if (!branchSet.has(holdRow.branch_id)) {
+      continue;
+    }
+    const holdStatus = String(holdRow.status || "").toLowerCase();
+    if (holdStatus !== "moved") {
+      continue;
+    }
+    const holdDate = isIsoDate(holdRow.moved_to_date)
+      ? holdRow.moved_to_date
+      : String(holdRow.date || "");
+    if (holdDate !== dateText) {
       continue;
     }
     const fishId = String(holdRow.fish_id || "");
@@ -1589,6 +1601,8 @@ function buildSummary(branchId, dateText) {
     const sold = soldQty(entry);
     const price = priceByBranchFish.get(scopeKey);
     const holdCost = Math.max(0, round2(numberOr(holdCostByBranchFish.get(scopeKey), 0)));
+    const holdPrice = getDailyPrice(setting.branch_id, dateText, setting.fish_id, "hold");
+    const effectiveNormalPrice = holdCost > 0 && holdPrice ? holdPrice : price;
     const sourceDate = isIsoDate(entry.auto_opening_from) ? entry.auto_opening_from : "";
     const autoCarriedOpeningQty = sourceDate
       ? Math.max(0, round2(numberOr(entry.opening_qty, 0)))
@@ -1605,8 +1619,18 @@ function buildSummary(branchId, dateText) {
     let yCost = yStockSoldQty > 0 ? (yPrice ? round2(yStockSoldQty * yPrice.cost_price_per_unit) : null) : 0;
     let yProfit = yRevenue !== null && yCost !== null ? round2(yRevenue - yCost) : null;
 
-    let normalRevenue = normalSoldQty > 0 ? (price ? round2(normalSoldQty * price.sell_price_per_unit) : null) : 0;
-    let normalCost = normalSoldQty > 0 ? (price ? round2(normalSoldQty * price.cost_price_per_unit) : null) : 0;
+    let normalRevenue =
+      normalSoldQty > 0
+        ? effectiveNormalPrice
+          ? round2(normalSoldQty * effectiveNormalPrice.sell_price_per_unit)
+          : null
+        : 0;
+    let normalCost =
+      normalSoldQty > 0
+        ? effectiveNormalPrice
+          ? round2(normalSoldQty * effectiveNormalPrice.cost_price_per_unit)
+          : null
+        : 0;
     let normalProfit = normalRevenue !== null && normalCost !== null ? round2(normalRevenue - normalCost) : null;
 
     if (holdCost > 0) {
@@ -1617,7 +1641,7 @@ function buildSummary(branchId, dateText) {
     }
 
     const hasMissingYPrice = yStockSoldQty > 0 && !yPrice;
-    const hasMissingNormalPrice = normalSoldQty > 0 && !price && holdCost <= 0;
+    const hasMissingNormalPrice = normalSoldQty > 0 && !effectiveNormalPrice && holdCost <= 0;
     const hasMissingPrice = hasMissingYPrice || hasMissingNormalPrice;
     const revenue = hasMissingPrice ? null : round2(numberOr(yRevenue, 0) + numberOr(normalRevenue, 0));
     const cost = hasMissingPrice ? null : round2(numberOr(yCost, 0) + numberOr(normalCost, 0));
@@ -3038,9 +3062,6 @@ function renderClosingPage() {
           <td><input class="table-input closing-input" type="number" step="0.01" value="${
             entry ? numberOr(entry.closing_qty, 0) : 0
           }" /></td>
-          <td><input class="table-input waste-input" type="number" step="0.01" value="${
-            entry ? numberOr(entry.waste_qty, 0) : 0
-          }" /></td>
         </tr>
       `;
     });
@@ -3065,14 +3086,13 @@ function renderClosingPage() {
               <tr>
                 <th>Fish</th>
                 <th>Closing Qty</th>
-                <th>Waste Qty</th>
               </tr>
             </thead>
             <tbody id="closingStockTableBody">
-              ${rows || '<tr><td colspan="3" class="empty-state">No active fish settings.</td></tr>'}
+              ${rows || '<tr><td colspan="2" class="empty-state">No active fish settings.</td></tr>'}
               ${
                 rows
-                  ? '<tr id="closingStockSearchEmptyRow" class="hidden"><td colspan="3" class="empty-state">No fish match your search.</td></tr>'
+                  ? '<tr id="closingStockSearchEmptyRow" class="hidden"><td colspan="2" class="empty-state">No fish match your search.</td></tr>'
                   : ""
               }
             </tbody>
@@ -5042,10 +5062,8 @@ function bindClosingEvents() {
         continue;
       }
       const closingQty = numberOr(row.querySelector(".closing-input")?.value, 0);
-      const wasteQty = numberOr(row.querySelector(".waste-input")?.value, 0);
       upsertStockEntry(state.branchId, state.date, fishId, {
-        closing_qty: closingQty,
-        waste_qty: wasteQty
+        closing_qty: closingQty
       });
     }
     const carry = autoCarryClosingToNextDay(state.branchId, state.date);
