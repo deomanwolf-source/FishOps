@@ -1610,14 +1610,11 @@ function buildSummary(branchId, dateText) {
     const yStockSoldQty = Math.max(0, Math.min(round2(sold), autoCarriedOpeningQty));
     const normalSoldQty = Math.max(0, round2(sold - yStockSoldQty));
 
-    const yPrice =
-      yStockSoldQty > 0
-        ? getDailyPrice(setting.branch_id, sourceDate, setting.fish_id, "morning") || price
-        : null;
+    const yPrice = yStockSoldQty > 0 ? getDailyPrice(setting.branch_id, dateText, setting.fish_id, "morning") || price : null;
 
     let yRevenue = yStockSoldQty > 0 ? (yPrice ? round2(yStockSoldQty * yPrice.sell_price_per_unit) : null) : 0;
-    let yCost = yStockSoldQty > 0 ? (yPrice ? round2(yStockSoldQty * yPrice.cost_price_per_unit) : null) : 0;
-    let yProfit = yRevenue !== null && yCost !== null ? round2(yRevenue - yCost) : null;
+    let yCost = 0;
+    let yProfit = yRevenue !== null ? round2(yRevenue - yCost) : null;
 
     let normalRevenue =
       normalSoldQty > 0
@@ -2563,7 +2560,7 @@ function renderYDailyPricesPage() {
     <section class="card wide">
       <div class="card-header">
         <h3>Y- Daily Price (${escapeHtml(state.date)})</h3>
-        <p class="page-note">Yesterday carried opening stock prices used for today's Y stock.</p>
+        <p class="page-note">Y stock uses today's morning sell price; Y cost is always treated as 0.</p>
       </div>
       <div class="table-search">
         <input
