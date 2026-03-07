@@ -114,6 +114,7 @@ const PAGES = [
   { id: "night_closing_stock", title: "Night Closing Stock", permission: "enter_closing_stock" },
   { id: "daily_summary", title: "Daily Summary", permission: "view_dashboard" },
   { id: "reports", title: "Reports", permission: "view_reports_today" },
+  { id: "monthly_calculations", title: "Monthly Calculations", permission: "view_reports_full" },
   { id: "about", title: "About", permission: "view_dashboard" },
   { id: "settings", title: "Settings", permission: "manage_branches" },
   { id: "delete_data", title: "Delete Data", permission: "delete_center" }
@@ -133,6 +134,7 @@ const state = {
   currentUser: null,
   branchId: "",
   date: isoDateToday(),
+  monthlyViewMonth: isoDateToday().slice(0, 7),
   activePage: "dashboard",
   quickSearch: {
     branchFishSettings: "",
@@ -303,6 +305,44 @@ function isoDaysBetween(fromIso, toIso) {
   const fromUtc = Date.UTC(fromYear, fromMonth - 1, fromDay);
   const toUtc = Date.UTC(toYear, toMonth - 1, toDay);
   return Math.floor((toUtc - fromUtc) / (1000 * 60 * 60 * 24));
+}
+
+function normalizeIsoMonth(value) {
+  const text = String(value || "").trim();
+  if (!/^\d{4}-\d{2}$/.test(text)) {
+    return "";
+  }
+  const [year, month] = text.split("-").map(Number);
+  if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
+    return "";
+  }
+  return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}`;
+}
+
+function getMonthDateRange(monthText) {
+  const fallbackMonth = isoDateToday().slice(0, 7);
+  const month = normalizeIsoMonth(monthText) || normalizeIsoMonth(fallbackMonth) || fallbackMonth;
+  const [year, monthNumber] = month.split("-").map(Number);
+  const startDate = `${String(year).padStart(4, "0")}-${String(monthNumber).padStart(2, "0")}-01`;
+  const nextMonthYear = monthNumber === 12 ? year + 1 : year;
+  const nextMonthNumber = monthNumber === 12 ? 1 : monthNumber + 1;
+  const nextMonthStartDate = `${String(nextMonthYear).padStart(4, "0")}-${String(nextMonthNumber).padStart(2, "0")}-01`;
+  const endDate = shiftIsoDate(nextMonthStartDate, -1);
+  const monthLabel = new Date(Date.UTC(year, monthNumber - 1, 1)).toLocaleDateString(undefined, {
+    month: "long",
+    year: "numeric",
+    timeZone: "UTC"
+  });
+  return { month, monthLabel, startDate, endDate };
+}
+
+function getMonthlyViewMonth() {
+  const stateMonth = normalizeIsoMonth(state.monthlyViewMonth);
+  if (stateMonth) {
+    return stateMonth;
+  }
+  const fromDate = isIsoDate(state.date) ? state.date.slice(0, 7) : isoDateToday().slice(0, 7);
+  return normalizeIsoMonth(fromDate) || isoDateToday().slice(0, 7);
 }
 
 function isWriteRestricted() {
@@ -1840,6 +1880,73 @@ function buildSummary(branchId, dateText) {
   return { rows, totals };
 }
 
+function buildMonthlySummary(branchId, monthText) {
+  const { month, monthLabel, startDate, endDate } = getMonthDateRange(monthText);
+  const dailyRows = [];
+  const totals = {
+    sold: 0,
+    waste: 0,
+    revenue: 0,
+    cost: 0,
+    profit: 0,
+    activeDays: 0,
+    missingPriceDays: 0
+  };
+
+  let cursor = startDate;
+  while (isoDaysBetween(cursor, endDate) >= 0) {
+    const { rows, totals: dayTotals } = buildSummary(branchId, cursor);
+    if (rows.length === 0) {
+      cursor = getTomorrow(cursor);
+      continue;
+    }
+
+    const waste = round2(rows.reduce((sum, row) => sum + numberOr(row.waste, 0), 0));
+    const hasMissingPrice = rows.some((row) => row.priceMissing);
+
+    dailyRows.push({
+      date: cursor,
+      fishRows: rows.length,
+      sold: round2(dayTotals.sold),
+      waste,
+      revenue: round2(dayTotals.revenue),
+      cost: round2(dayTotals.cost),
+      profit: round2(dayTotals.profit),
+      hasMissingPrice
+    });
+
+    totals.sold = round2(totals.sold + dayTotals.sold);
+    totals.waste = round2(totals.waste + waste);
+    totals.revenue = round2(totals.revenue + dayTotals.revenue);
+    totals.cost = round2(totals.cost + dayTotals.cost);
+    totals.profit = round2(totals.profit + dayTotals.profit);
+    totals.activeDays += 1;
+    if (hasMissingPrice) {
+      totals.missingPriceDays += 1;
+    }
+
+    cursor = getTomorrow(cursor);
+  }
+
+  const bestProfitDay = dailyRows.length
+    ? [...dailyRows].sort((a, b) => b.profit - a.profit)[0]
+    : null;
+  const worstProfitDay = dailyRows.length
+    ? [...dailyRows].sort((a, b) => a.profit - b.profit)[0]
+    : null;
+
+  return {
+    month,
+    monthLabel,
+    startDate,
+    endDate,
+    rows: dailyRows,
+    totals,
+    bestProfitDay,
+    worstProfitDay
+  };
+}
+
 function setBrandMark(element) {
   if (!element) {
     return;
@@ -3152,6 +3259,104 @@ function renderReportsPage() {
   `;
 }
 
+function renderMonthlyCalculationsPage() {
+  const month = getMonthlyViewMonth();
+  const summary = buildMonthlySummary(state.branchId, month);
+  const bestDayText = summary.bestProfitDay
+    ? `${summary.bestProfitDay.date} (${money(summary.bestProfitDay.profit)})`
+    : "-";
+  const worstDayText = summary.worstProfitDay
+    ? `${summary.worstProfitDay.date} (${money(summary.worstProfitDay.profit)})`
+    : "-";
+
+  return `
+    <section class="card wide">
+      <div class="card-header"><h3>Monthly Calculations</h3></div>
+      <div class="inline-actions">
+        <label for="monthlyCalcMonthInput"><strong>Month</strong></label>
+        <input id="monthlyCalcMonthInput" class="table-input" type="month" value="${escapeHtml(
+          summary.month
+        )}" />
+      </div>
+      <p class="page-note">
+        Scope: ${escapeHtml(getBranchScopeLabel(state.branchId))} | Month: ${escapeHtml(summary.monthLabel)} | Showing only days with stock activity.
+      </p>
+    </section>
+
+    <section class="kpi-grid">
+      <article class="kpi-card"><p>Revenue</p><h2>${money(summary.totals.revenue)}</h2></article>
+      <article class="kpi-card"><p>Cost</p><h2>${money(summary.totals.cost)}</h2></article>
+      <article class="kpi-card"><p>Profit</p><h2 class="${
+        summary.totals.profit >= 0 ? "profit-positive" : "profit-negative"
+      }">${money(summary.totals.profit)}</h2></article>
+      <article class="kpi-card"><p>Sold</p><h2>${summary.totals.sold.toFixed(2)}</h2></article>
+      <article class="kpi-card"><p>Waste</p><h2>${summary.totals.waste.toFixed(2)}</h2></article>
+      <article class="kpi-card"><p>Active Days</p><h2>${summary.totals.activeDays}</h2></article>
+    </section>
+
+    <section class="content-grid">
+      <article class="card">
+        <div class="card-header"><h3>Best Profit Day</h3></div>
+        <p><strong>${escapeHtml(bestDayText)}</strong></p>
+      </article>
+      <article class="card">
+        <div class="card-header"><h3>Lowest Profit Day</h3></div>
+        <p><strong>${escapeHtml(worstDayText)}</strong></p>
+      </article>
+      <article class="card">
+        <div class="card-header"><h3>Missing Prices</h3></div>
+        <p><strong>${summary.totals.missingPriceDays}</strong> day(s) with incomplete pricing.</p>
+      </article>
+    </section>
+
+    <section class="card wide">
+      <div class="card-header"><h3>Daily Breakdown</h3></div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Fish Rows</th>
+              <th>Sold</th>
+              <th>Waste</th>
+              <th>Revenue</th>
+              <th>Cost</th>
+              <th>Profit</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${
+              summary.rows.length === 0
+                ? '<tr><td colspan="8" class="empty-state">No stock activity found for this month and branch scope.</td></tr>'
+                : summary.rows
+                    .map(
+                      (row) => `
+                        <tr>
+                          <td>${escapeHtml(row.date)}</td>
+                          <td>${row.fishRows}</td>
+                          <td>${row.sold.toFixed(2)}</td>
+                          <td>${row.waste.toFixed(2)}</td>
+                          <td>${money(row.revenue)}</td>
+                          <td>${money(row.cost)}</td>
+                          <td class="${row.profit >= 0 ? "profit-positive" : "profit-negative"}">${money(
+                            row.profit
+                          )}</td>
+                          <td><span class="chip ${row.hasMissingPrice ? "warning" : "ok"}">${
+                            row.hasMissingPrice ? "MISSING PRICE" : "OK"
+                          }</span></td>
+                        </tr>
+                      `
+                    )
+                    .join("")
+            }
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
 function renderSettingsPage() {
   const canManageSettings = hasPermission(state.currentUser, "manage_settings");
   const canManageBranches = hasPermission(state.currentUser, "manage_branches");
@@ -3590,6 +3795,8 @@ function renderActivePage() {
       return renderDailySummaryPage();
     case "reports":
       return renderReportsPage();
+    case "monthly_calculations":
+      return renderMonthlyCalculationsPage();
     case "about":
       return renderAboutPage();
     case "settings":
@@ -5094,6 +5301,19 @@ function bindReportsEvents() {
   orderBtn?.addEventListener("click", downloadTomorrowOrderPdf);
 }
 
+function bindMonthlyCalculationsEvents() {
+  const monthInput = document.getElementById("monthlyCalcMonthInput");
+  monthInput?.addEventListener("change", () => {
+    const nextMonth = normalizeIsoMonth(monthInput.value);
+    if (!nextMonth) {
+      monthInput.value = getMonthlyViewMonth();
+      return;
+    }
+    state.monthlyViewMonth = nextMonth;
+    renderApp();
+  });
+}
+
 function bindSettingsEvents() {
   if (isWriteRestricted()) {
     return;
@@ -5485,6 +5705,9 @@ function bindActivePageEvents() {
     case "reports":
       bindReportsEvents();
       break;
+    case "monthly_calculations":
+      bindMonthlyCalculationsEvents();
+      break;
     case "settings":
       bindSettingsEvents();
       break;
@@ -5572,6 +5795,7 @@ function startSession(user) {
   state.quickSearch.morningOpeningStock = "";
   state.quickSearch.nightClosingStock = "";
   state.date = isoDateToday();
+  state.monthlyViewMonth = state.date.slice(0, 7);
   ui.dateInput.value = state.date;
   populateBranchSelector();
   applyBranding();
@@ -5592,6 +5816,7 @@ function endSession() {
   state.quickSearch.remainingHolds = "";
   state.quickSearch.morningOpeningStock = "";
   state.quickSearch.nightClosingStock = "";
+  state.monthlyViewMonth = isoDateToday().slice(0, 7);
   ui.usernameInput.value = "";
   ui.passwordInput.value = "";
   ui.loginError.textContent = "";
