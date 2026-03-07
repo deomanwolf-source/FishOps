@@ -101,9 +101,29 @@ This starts the FishOps Express API + web server from the project root.
 
 - Default URL: `http://127.0.0.1:8080`
 - API health: `http://127.0.0.1:8080/api/health`
-- SQLite file: `./data/fishops.db`
+- Storage backend:
+  - SQLite by default: `./data/fishops.db`
+  - PostgreSQL when `DATABASE_URL` is set
 - Optional environment variables:
   - `PORT` (for cloud/server platforms)
+  - `DATABASE_URL` (example: `postgresql://postgres:password@localhost:5432/fishops`)
+  - `PGSSLMODE=require` (optional for managed PostgreSQL services)
+
+### Use PostgreSQL for app data
+
+If PostgreSQL is running on your machine:
+
+```bash
+export DATABASE_URL="postgresql://postgres:your_password@localhost:5432/fishops"
+npm install
+npm start
+```
+
+On Ubuntu/Linux, create the DB once if needed:
+
+```bash
+sudo -u postgres psql -c "CREATE DATABASE fishops;"
+```
 
 ## Domain engine quick run (non-UI)
 
