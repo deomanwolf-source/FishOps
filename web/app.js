@@ -12,6 +12,8 @@ const REMOTE_BACKUP_ENDPOINT = "/api/backup";
 const REMOTE_STORE_VERSION_ENDPOINT = "/api/store/version";
 const REMOTE_STORE_POLL_INTERVAL_MS = 15000;
 const LOCAL_STORE_PERSISTENCE_ENABLED = false;
+const CLIENT_ERROR_LOG_LIMIT = 200;
+const ACTIVITY_LOG_LIMIT = 2000;
 
 const DEFAULT_STORE = {
   data: {
@@ -31,7 +33,8 @@ const DEFAULT_STORE = {
     branch_fish_settings: [],
     daily_prices: [],
     daily_stock_entry: [],
-    hold_stock_entry: []
+    hold_stock_entry: [],
+    activity_logs: []
   },
   settings: {
     company_name: "RTX FishOps",
@@ -69,7 +72,9 @@ const ROLE_PERMISSIONS = {
     "view_reports_today",
     "view_reports_full",
     "manage_branches",
-    "manage_settings"
+    "manage_settings",
+    "view_error_logs",
+    "view_activity_logs"
   ],
   admin: [
     "view_dashboard",
@@ -115,6 +120,8 @@ const PAGES = [
   { id: "daily_summary", title: "Daily Summary", permission: "view_dashboard" },
   { id: "reports", title: "Reports", permission: "view_reports_today" },
   { id: "monthly_calculations", title: "Monthly Calculations", permission: "view_reports_full" },
+  { id: "error_logs", title: "Error Logs", permission: "view_error_logs" },
+  { id: "activity_logs", title: "Activity Logs", permission: "view_activity_logs" },
   { id: "about", title: "About", permission: "view_dashboard" },
   { id: "settings", title: "Settings", permission: "manage_branches" },
   { id: "delete_data", title: "Delete Data", permission: "delete_center" }
@@ -129,6 +136,9 @@ let remoteStorePushInFlight = false;
 let remoteSyncAvailable = false;
 let storageQuotaTrimAlertShown = false;
 let storageQuotaFailureAlertShown = false;
+let clientErrorCaptureInstalled = false;
+
+const clientErrorLogs = [];
 
 const state = {
   currentUser: null,
@@ -137,9 +147,13 @@ const state = {
   monthlyViewMonth: isoDateToday().slice(0, 7),
   activePage: "dashboard",
   quickSearch: {
+    fishProfiles: "",
     branchFishSettings: "",
     dailyPrices: "",
     yDailyPrices: "",
+    dailySummary: "",
+    errorLogs: "",
+    activityLogs: "",
     holdStock: "",
     remainingStocks: "",
     remainingHolds: "",
@@ -263,6 +277,225 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+function truncateText(value, maxLength = 4000) {
+  const text = String(value ?? "");
+  if (text.length <= maxLength) {
+    return text;
+  }
+  return `${text.slice(0, maxLength)}...`;
+}
+
+function getPageTitle(pageId) {
+  const page = PAGES.find((item) => item.id === pageId);
+  return page?.title || String(pageId || "Unknown");
+}
+
+function toLogText(value, maxLength = 1000) {
+  if (value === undefined || value === null) {
+    return "";
+  }
+  if (typeof value === "string") {
+    return truncateText(value, maxLength);
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  try {
+    return truncateText(JSON.stringify(value), maxLength);
+  } catch {
+    return truncateText(String(value), maxLength);
+  }
+}
+
+function normalizeActivityLogEntry(rawEntry = {}) {
+  const createdAtRaw = String(rawEntry.created_at || "").trim();
+  const parsedTime = Date.parse(createdAtRaw);
+  const createdAt = Number.isNaN(parsedTime) ? new Date().toISOString() : new Date(parsedTime).toISOString();
+  const pageId = String(rawEntry.page_id || "").trim();
+  const pageTitle = String(rawEntry.page_title || "").trim() || getPageTitle(pageId);
+
+  return {
+    id: String(rawEntry.id || makeId("ACT")),
+    created_at: createdAt,
+    username: toLogText(rawEntry.username || "", 120),
+    role: toLogText(rawEntry.role || "", 60),
+    category: toLogText(rawEntry.category || "data_change", 80),
+    action: toLogText(rawEntry.action || "Saved changes", 280),
+    page_id: pageId,
+    page_title: toLogText(pageTitle, 160),
+    branch_scope: toLogText(rawEntry.branch_scope || "", 120),
+    date_scope: toLogText(rawEntry.date_scope || "", 40),
+    details: toLogText(rawEntry.details || "", 1500)
+  };
+}
+
+function addActivityLogEntry(activity = {}) {
+  if (!state.currentUser) {
+    return null;
+  }
+  if (!Array.isArray(DATA?.activity_logs)) {
+    DATA.activity_logs = [];
+  }
+
+  const pageId = String(activity.pageId || state.activePage || "");
+  const entry = normalizeActivityLogEntry({
+    id: makeId("ACT"),
+    created_at: new Date().toISOString(),
+    username: state.currentUser.username || "",
+    role: state.currentUser.role || "",
+    category: activity.category || "data_change",
+    action: activity.action || `Saved changes in ${getPageTitle(pageId)}`,
+    page_id: pageId,
+    page_title: getPageTitle(pageId),
+    branch_scope:
+      activity.branchScope === undefined ? getBranchScopeLabel(state.branchId) : activity.branchScope,
+    date_scope: activity.dateScope === undefined ? state.date : activity.dateScope,
+    details: activity.details || ""
+  });
+
+  DATA.activity_logs.unshift(entry);
+  if (DATA.activity_logs.length > ACTIVITY_LOG_LIMIT) {
+    DATA.activity_logs.length = ACTIVITY_LOG_LIMIT;
+  }
+  return entry;
+}
+
+function getActivityLogBucket(entry = {}) {
+  const category = String(entry.category || "")
+    .trim()
+    .toLowerCase();
+  const actionText = String(entry.action || "")
+    .trim()
+    .toLowerCase();
+
+  if (
+    category === "backup" ||
+    /backup|import|restore|export|reload/.test(actionText)
+  ) {
+    return "backup_import";
+  }
+  if (
+    category === "delete" ||
+    /delete|wipe|remove|clear|purge/.test(actionText)
+  ) {
+    return "delete_wipe";
+  }
+  if (
+    category === "data_change" ||
+    /create|add|save|update|edit|set|toggle/.test(actionText)
+  ) {
+    return "create_update";
+  }
+  return "other";
+}
+
+function stringifyErrorReason(reason) {
+  if (reason instanceof Error) {
+    return {
+      message: reason.message || String(reason),
+      stack: String(reason.stack || "")
+    };
+  }
+
+  if (typeof reason === "string") {
+    return { message: reason, stack: "" };
+  }
+
+  try {
+    return { message: JSON.stringify(reason), stack: "" };
+  } catch {
+    return { message: String(reason), stack: "" };
+  }
+}
+
+function addClientErrorLog(details = {}) {
+  const source = String(details.source || "").trim();
+  const line = Number.isFinite(details.line) ? Math.trunc(Number(details.line)) : null;
+  const column = Number.isFinite(details.column) ? Math.trunc(Number(details.column)) : null;
+  const location = line === null ? source : `${source || "inline"}:${line}${column === null ? "" : `:${column}`}`;
+
+  clientErrorLogs.unshift({
+    id: makeId("ERR"),
+    created_at: new Date().toISOString(),
+    type: String(details.type || "runtime"),
+    message: truncateText(details.message || "Unknown error", 2000),
+    stack: truncateText(details.stack || "", 12000),
+    source,
+    line,
+    column,
+    location: truncateText(location, 300),
+    page: String(state.activePage || ""),
+    branch_id: String(state.branchId || ""),
+    username: String(state.currentUser?.username || "")
+  });
+
+  if (clientErrorLogs.length > CLIENT_ERROR_LOG_LIMIT) {
+    clientErrorLogs.length = CLIENT_ERROR_LOG_LIMIT;
+  }
+}
+
+function installClientErrorCapture() {
+  if (clientErrorCaptureInstalled) {
+    return;
+  }
+
+  clientErrorCaptureInstalled = true;
+
+  window.addEventListener("error", (event) => {
+    const nativeError = event.error;
+    addClientErrorLog({
+      type: "window-error",
+      message: nativeError?.message || event.message || "Unknown script error",
+      stack: String(nativeError?.stack || ""),
+      source: event.filename || "",
+      line: event.lineno,
+      column: event.colno
+    });
+  });
+
+  window.addEventListener("unhandledrejection", (event) => {
+    const reason = stringifyErrorReason(event.reason);
+    addClientErrorLog({
+      type: "unhandled-rejection",
+      message: reason.message || "Unhandled promise rejection",
+      stack: reason.stack || ""
+    });
+  });
+}
+
+function localIsoDateFromValue(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function getErrorActionLabel(type) {
+  const normalizedType = String(type || "").toLowerCase();
+  if (normalizedType === "window-error") {
+    return "Runtime Error";
+  }
+  if (normalizedType === "unhandled-rejection") {
+    return "Promise Rejection";
+  }
+  return "Error";
+}
+
+function getErrorActionChipClass(type) {
+  const normalizedType = String(type || "").toLowerCase();
+  if (normalizedType === "window-error") {
+    return "critical";
+  }
+  if (normalizedType === "unhandled-rejection") {
+    return "warning";
+  }
+  return "info";
 }
 
 function getInitials(value) {
@@ -391,7 +624,10 @@ function loadStore(overrideSnapshot = null) {
       : base.data.daily_stock_entry,
     hold_stock_entry: Array.isArray(parsedData.hold_stock_entry)
       ? parsedData.hold_stock_entry
-      : base.data.hold_stock_entry
+      : base.data.hold_stock_entry,
+    activity_logs: Array.isArray(parsedData.activity_logs)
+      ? parsedData.activity_logs
+      : base.data.activity_logs
   };
 
   state.settings = {
@@ -522,6 +758,11 @@ function loadStore(overrideSnapshot = null) {
       row.moved_to_date = "";
     }
   }
+
+  DATA.activity_logs = DATA.activity_logs
+    .filter((entry) => entry && typeof entry === "object")
+    .map((entry) => normalizeActivityLogEntry(entry))
+    .slice(0, ACTIVITY_LOG_LIMIT);
 
   const movedHoldTotalsByStockKey = new Map();
   for (const row of DATA.hold_stock_entry) {
@@ -765,6 +1006,17 @@ function syncRuntimeWithSavedSnapshot(savedSnapshot) {
 }
 
 function saveStore(options = {}) {
+  if (options.logActivity !== false) {
+    addActivityLogEntry({
+      category: options.activityCategory || "data_change",
+      action: options.activityAction || "",
+      details: options.activityDetails || "",
+      branchScope: options.activityBranchScope,
+      dateScope: options.activityDateScope,
+      pageId: options.activityPageId
+    });
+  }
+
   const persistResult = writeSnapshotToLocalStorage(getCurrentStoreSnapshot(), {
     notifyOnQuota: options.notifyOnQuota !== false
   });
@@ -952,6 +1204,14 @@ async function reloadStoreFromServer(showAlert = false) {
     }
 
     if (showAlert) {
+      saveStore({
+        activityCategory: "backup",
+        activityAction: "Reloaded latest backup from server",
+        activityDetails: {
+          source: REMOTE_STORE_ENDPOINT,
+          updated_at: payload?.updated_at || ""
+        }
+      });
       alert("Loaded latest backup from server.");
     }
     return true;
@@ -1025,12 +1285,19 @@ async function sendBackupToServer() {
     return;
   }
 
-  await uploadStoreSnapshot({
+  const sent = await uploadStoreSnapshot({
     endpoint: REMOTE_BACKUP_ENDPOINT,
     method: "POST",
     showAlert: true,
     successMessage: "Backup sent and saved on server."
   });
+  if (sent) {
+    saveStore({
+      activityCategory: "backup",
+      activityAction: "Sent backup to server",
+      activityDetails: { endpoint: REMOTE_BACKUP_ENDPOINT }
+    });
+  }
 }
 
 function hasPermission(user, permission) {
@@ -1059,8 +1326,21 @@ function isGlobalAdminUser(user) {
   return user?.role === "admin" && !String(user?.branch_id ?? "").trim();
 }
 
+function canAccessPage(user, page) {
+  if (!user || !page || !hasPermission(user, page.permission)) {
+    return false;
+  }
+  if (page.id === "y_daily_prices" && user.role !== "master") {
+    return false;
+  }
+  if (page.id === "activity_logs" && user.role !== "master") {
+    return false;
+  }
+  return true;
+}
+
 function getVisiblePages(user) {
-  return PAGES.filter((page) => hasPermission(user, page.permission));
+  return PAGES.filter((page) => canAccessPage(user, page));
 }
 
 function canSelectAllBranches(user) {
@@ -2058,10 +2338,60 @@ function renderNav() {
   });
 }
 
-function renderDailySummaryTable(rows) {
+function renderDailySummaryTable(rows, options = {}) {
+  const showSearch = Boolean(options.showSearch);
+  const searchMarkup = showSearch
+    ? `
+      <div class="table-search">
+        <input
+          id="dailySummarySearchInput"
+          class="table-input"
+          type="search"
+          placeholder="Search fish by code/name"
+          value="${escapeHtml(state.quickSearch.dailySummary)}"
+        />
+      </div>
+    `
+    : "";
+
+  const rowMarkup = rows
+    .map((row) => {
+      const searchable = fishSearchText(
+        row.fish,
+        [row.fish?.fish_code, row.fish?.name, row.alert].filter(Boolean).join(" ")
+      );
+      return `
+        <tr data-fish-search="${escapeHtml(searchable)}">
+          <td>${escapeHtml(row.fish.name)}</td>
+          <td>${row.sold.toFixed(2)} ${escapeHtml(row.fish.unit)}</td>
+          <td>${row.yStock.toFixed(2)} ${escapeHtml(row.fish.unit)}</td>
+          <td>${row.yRevenue === null ? "-" : money(row.yRevenue)}</td>
+          <td>${row.yCost === null ? "-" : money(row.yCost)}</td>
+          <td class="${(row.yProfit || 0) >= 0 ? "profit-positive" : "profit-negative"}">${
+            row.yProfit === null ? "-" : money(row.yProfit)
+          }</td>
+          <td>${row.normalRevenue === null ? "-" : money(row.normalRevenue)}</td>
+          <td>${row.normalCost === null ? "-" : money(row.normalCost)}</td>
+          <td class="${(row.normalProfit || 0) >= 0 ? "profit-positive" : "profit-negative"}">${
+            row.normalProfit === null ? "-" : money(row.normalProfit)
+          }</td>
+          <td>${row.closing.toFixed(2)} ${escapeHtml(row.fish.unit)}</td>
+          <td>${row.waste.toFixed(2)} ${escapeHtml(row.fish.unit)}</td>
+          <td>${row.revenue === null ? "-" : money(row.revenue)}</td>
+          <td>${row.cost === null ? "-" : money(row.cost)}</td>
+          <td class="${(row.profit || 0) >= 0 ? "profit-positive" : "profit-negative"}">${
+            row.profit === null ? "-" : money(row.profit)
+          }</td>
+          <td><span class="chip ${row.alert.toLowerCase()}">${row.alert}</span></td>
+        </tr>
+      `;
+    })
+    .join("");
+
   return `
     <section class="card wide">
       <div class="card-header"><h3>Daily Summary (Per Fish)</h3></div>
+      ${searchMarkup}
       <div class="table-wrap">
         <table>
           <thead>
@@ -2083,39 +2413,16 @@ function renderDailySummaryTable(rows) {
               <th>Status</th>
             </tr>
           </thead>
-          <tbody>
+          <tbody ${showSearch ? 'id="dailySummaryTableBody"' : ""}>
             ${
               rows.length === 0
                 ? '<tr><td colspan="15" class="empty-state">No stock entries for selected date.</td></tr>'
-                : rows
-                    .map(
-                      (row) => `
-                        <tr>
-                          <td>${escapeHtml(row.fish.name)}</td>
-                          <td>${row.sold.toFixed(2)} ${escapeHtml(row.fish.unit)}</td>
-                          <td>${row.yStock.toFixed(2)} ${escapeHtml(row.fish.unit)}</td>
-                          <td>${row.yRevenue === null ? "-" : money(row.yRevenue)}</td>
-                          <td>${row.yCost === null ? "-" : money(row.yCost)}</td>
-                          <td class="${(row.yProfit || 0) >= 0 ? "profit-positive" : "profit-negative"}">${
-                            row.yProfit === null ? "-" : money(row.yProfit)
-                          }</td>
-                          <td>${row.normalRevenue === null ? "-" : money(row.normalRevenue)}</td>
-                          <td>${row.normalCost === null ? "-" : money(row.normalCost)}</td>
-                          <td class="${(row.normalProfit || 0) >= 0 ? "profit-positive" : "profit-negative"}">${
-                            row.normalProfit === null ? "-" : money(row.normalProfit)
-                          }</td>
-                          <td>${row.closing.toFixed(2)} ${escapeHtml(row.fish.unit)}</td>
-                          <td>${row.waste.toFixed(2)} ${escapeHtml(row.fish.unit)}</td>
-                          <td>${row.revenue === null ? "-" : money(row.revenue)}</td>
-                          <td>${row.cost === null ? "-" : money(row.cost)}</td>
-                          <td class="${(row.profit || 0) >= 0 ? "profit-positive" : "profit-negative"}">${
-                            row.profit === null ? "-" : money(row.profit)
-                          }</td>
-                          <td><span class="chip ${row.alert.toLowerCase()}">${row.alert}</span></td>
-                        </tr>
-                      `
-                    )
-                    .join("")
+                : rowMarkup
+            }
+            ${
+              showSearch && rows.length > 0
+                ? '<tr id="dailySummarySearchEmptyRow" class="hidden"><td colspan="15" class="empty-state">No fish match your search.</td></tr>'
+                : ""
             }
           </tbody>
         </table>
@@ -2269,9 +2576,13 @@ function renderFishProfilesPage() {
   const canDelete = hasPermission(state.currentUser, "delete_fish_profile");
 
   const rows = DATA.fish_profiles
-    .map(
-      (fish) => `
-      <tr>
+    .map((fish) => {
+      const searchable = fishSearchText(
+        fish,
+        [fish.category, fish.unit, fish.status, fish.id].filter(Boolean).join(" ")
+      );
+      return `
+      <tr data-fish-search="${escapeHtml(searchable)}">
         <td>${escapeHtml(fish.fish_code)}</td>
         <td>${
           canEdit
@@ -2319,8 +2630,8 @@ function renderFishProfilesPage() {
           }
         </td>
       </tr>
-    `
-    )
+    `;
+    })
     .join("");
 
   return `
@@ -2353,6 +2664,15 @@ function renderFishProfilesPage() {
 
     <section class="card wide">
       <div class="card-header"><h3>Fish Profiles</h3></div>
+      <div class="table-search">
+        <input
+          id="fishProfilesSearchInput"
+          class="table-input"
+          type="search"
+          placeholder="Search fish by code/name/category/status"
+          value="${escapeHtml(state.quickSearch.fishProfiles)}"
+        />
+      </div>
       <div class="table-wrap">
         <table>
           <thead>
@@ -2365,7 +2685,14 @@ function renderFishProfilesPage() {
               <th>Actions</th>
             </tr>
           </thead>
-          <tbody>${rows}</tbody>
+          <tbody id="fishProfilesTableBody">
+            ${rows || '<tr><td colspan="6" class="empty-state">No fish profiles found.</td></tr>'}
+            ${
+              rows
+                ? '<tr id="fishProfilesSearchEmptyRow" class="hidden"><td colspan="6" class="empty-state">No fish match your search.</td></tr>'
+                : ""
+            }
+          </tbody>
         </table>
       </div>
     </section>
@@ -3221,7 +3548,7 @@ function renderDailySummaryPage() {
       }">${money(totals.profit)}</h2></article>
       <article class="kpi-card"><p>Total Sold</p><h2>${totals.sold.toFixed(2)}</h2></article>
     </section>
-    ${renderDailySummaryTable(rows)}
+    ${renderDailySummaryTable(rows, { showSearch: true })}
   `;
 }
 
@@ -3684,6 +4011,299 @@ function renderAboutPage() {
   `;
 }
 
+function renderErrorLogsPage() {
+  const totalLogs = clientErrorLogs.length;
+  const runtimeCount = clientErrorLogs.filter((entry) => entry.type === "window-error").length;
+  const rejectionCount = clientErrorLogs.filter((entry) => entry.type === "unhandled-rejection").length;
+  const otherCount = Math.max(0, totalLogs - runtimeCount - rejectionCount);
+  const todayIso = isoDateToday();
+  const todayCount = clientErrorLogs.filter((entry) => localIsoDateFromValue(entry.created_at) === todayIso).length;
+
+  const rows = clientErrorLogs
+    .map((entry) => {
+      const createdAt = new Date(entry.created_at);
+      const createdLabel = Number.isNaN(createdAt.getTime())
+        ? String(entry.created_at || "-")
+        : createdAt.toLocaleString();
+      const actionLabel = getErrorActionLabel(entry.type);
+      const actionChipClass = getErrorActionChipClass(entry.type);
+      const page = String(entry.page || "-");
+      const branch = String(entry.branch_id || "-");
+      const user = String(entry.username || "-");
+      const summary = String(entry.message || "-");
+      const location = String(entry.location || "-");
+      const detailsText = [location, entry.stack].filter(Boolean).join("\n\n");
+      const searchable = [
+        actionLabel,
+        entry.type,
+        summary,
+        page,
+        branch,
+        user,
+        location
+      ]
+        .join(" ")
+        .toLowerCase();
+
+      return `
+        <tr data-fish-search="${escapeHtml(searchable)}">
+          <td>${escapeHtml(createdLabel)}</td>
+          <td><span class="chip ${escapeHtml(actionChipClass)}">${escapeHtml(actionLabel)}</span></td>
+          <td>${escapeHtml(page)}</td>
+          <td>${escapeHtml(branch)}</td>
+          <td>${escapeHtml(user)}</td>
+          <td>${escapeHtml(summary)}</td>
+          <td>
+            <details>
+              <summary>View</summary>
+              <pre class="hint" style="white-space:pre-wrap;margin:6px 0 0;">${escapeHtml(
+                detailsText || "-"
+              )}</pre>
+            </details>
+          </td>
+        </tr>
+      `;
+    })
+    .join("");
+
+  return `
+    <section class="card wide">
+      <div class="card-header"><h3>Activity Logs</h3></div>
+      <p class="page-note">${escapeHtml(getBranchScopeLabel(state.branchId))} | ${escapeHtml(
+        state.date
+      )} | role=${escapeHtml(state.currentUser?.role || "-")}</p>
+    </section>
+
+    <section class="kpi-grid">
+      <article class="kpi-card"><p>Total Logs</p><h2>${totalLogs}</h2></article>
+      <article class="kpi-card"><p>Runtime Errors</p><h2>${runtimeCount}</h2></article>
+      <article class="kpi-card"><p>Promise Rejections</p><h2>${rejectionCount}</h2></article>
+      <article class="kpi-card"><p>Other</p><h2>${otherCount}</h2></article>
+      <article class="kpi-card"><p>Today</p><h2>${todayCount}</h2></article>
+    </section>
+
+    <section class="card wide">
+      <div class="card-header"><h3>Activity Logs</h3></div>
+      <div class="inline-actions">
+        <button
+          type="button"
+          class="btn btn-outline"
+          id="downloadErrorLogsBtn"
+          ${totalLogs > 0 ? "" : "disabled"}
+        >Download Logs JSON</button>
+        <button
+          type="button"
+          class="btn btn-danger"
+          id="clearErrorLogsBtn"
+          ${totalLogs > 0 ? "" : "disabled"}
+        >Clear Logs</button>
+      </div>
+      <div class="table-search" style="margin-top:10px;">
+        <input
+          id="errorLogsSearchInput"
+          class="table-input"
+          type="search"
+          placeholder="Quick find by action, summary, page, user, or branch"
+          value="${escapeHtml(state.quickSearch.errorLogs)}"
+        />
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Action</th>
+              <th>Page</th>
+              <th>Branch</th>
+              <th>User</th>
+              <th>Summary</th>
+              <th>Details</th>
+            </tr>
+          </thead>
+          <tbody id="errorLogsTableBody">
+            ${rows || '<tr><td colspan="7" class="empty-state">No errors captured yet.</td></tr>'}
+            ${
+              rows
+                ? '<tr id="errorLogsSearchEmptyRow" class="hidden"><td colspan="7" class="empty-state">No logs match your search.</td></tr>'
+                : ""
+            }
+          </tbody>
+        </table>
+      </div>
+      <p class="page-note">Captures current-session client errors. Keeps latest ${CLIENT_ERROR_LOG_LIMIT} logs.</p>
+    </section>
+  `;
+}
+
+function renderActivityLogsPage() {
+  if (state.currentUser?.role !== "master") {
+    return `
+      <section class="card wide">
+        <p class="empty-state">Only master can access Activity Logs.</p>
+      </section>
+    `;
+  }
+
+  const entries = Array.isArray(DATA.activity_logs) ? DATA.activity_logs : [];
+  const totals = entries.reduce(
+    (acc, entry) => {
+      const bucket = getActivityLogBucket(entry);
+      if (bucket === "create_update") {
+        acc.createUpdate += 1;
+      } else if (bucket === "delete_wipe") {
+        acc.deleteWipe += 1;
+      } else if (bucket === "backup_import") {
+        acc.backupImport += 1;
+      }
+      if (localIsoDateFromValue(entry.created_at) === isoDateToday()) {
+        acc.today += 1;
+      }
+      return acc;
+    },
+    { createUpdate: 0, deleteWipe: 0, backupImport: 0, today: 0 }
+  );
+
+  const rows = entries
+    .map((entry) => {
+      const createdAt = new Date(entry.created_at);
+      const createdLabel = Number.isNaN(createdAt.getTime())
+        ? String(entry.created_at || "-")
+        : createdAt.toLocaleString();
+      const bucket = getActivityLogBucket(entry);
+      const actionLabel =
+        bucket === "create_update"
+          ? "Create/Update"
+          : bucket === "delete_wipe"
+            ? "Delete/Wipe"
+            : bucket === "backup_import"
+              ? "Backup/Import"
+              : "Other";
+      const actionChipClass =
+        bucket === "create_update"
+          ? "info"
+          : bucket === "delete_wipe"
+            ? "critical"
+            : bucket === "backup_import"
+              ? "ok"
+              : "warning";
+      const page = String(entry.page_title || "-");
+      const branch = String(entry.branch_scope || "-");
+      const user = [entry.username, String(entry.role || "").toUpperCase()]
+        .map((value) => String(value || "").trim())
+        .filter(Boolean)
+        .join(" | ");
+      const summary = String(entry.action || "-");
+      const detailsText = [
+        entry.details ? `Details: ${entry.details}` : "",
+        `Category: ${String(entry.category || "-")}`,
+        `Date Scope: ${String(entry.date_scope || "-")}`
+      ]
+        .filter(Boolean)
+        .join("\n");
+      const searchable = [
+        createdLabel,
+        actionLabel,
+        page,
+        branch,
+        user,
+        summary,
+        entry.details || "",
+        entry.category || "",
+        entry.date_scope || ""
+      ]
+        .join(" ")
+        .toLowerCase();
+
+      return `
+        <tr data-fish-search="${escapeHtml(searchable)}">
+          <td>${escapeHtml(createdLabel)}</td>
+          <td><span class="chip ${escapeHtml(actionChipClass)}">${escapeHtml(actionLabel)}</span></td>
+          <td>${escapeHtml(page)}</td>
+          <td>${escapeHtml(branch)}</td>
+          <td>${escapeHtml(user || "-")}</td>
+          <td>${escapeHtml(summary)}</td>
+          <td>
+            <details>
+              <summary>View</summary>
+              <pre class="hint" style="white-space:pre-wrap;margin:6px 0 0;">${escapeHtml(
+                detailsText || "-"
+              )}</pre>
+            </details>
+          </td>
+        </tr>
+      `;
+    })
+    .join("");
+
+  return `
+    <section class="card wide">
+      <div class="card-header"><h3>Activity Logs</h3></div>
+      <p class="page-note">${escapeHtml(getBranchScopeLabel(state.branchId))} | ${escapeHtml(
+        state.date
+      )} | role=${escapeHtml(state.currentUser?.role || "-")}</p>
+    </section>
+
+    <section class="kpi-grid">
+      <article class="kpi-card"><p>Total Logs</p><h2>${entries.length}</h2></article>
+      <article class="kpi-card"><p>Create/Update</p><h2>${totals.createUpdate}</h2></article>
+      <article class="kpi-card"><p>Delete/Wipe</p><h2>${totals.deleteWipe}</h2></article>
+      <article class="kpi-card"><p>Backup/Import</p><h2>${totals.backupImport}</h2></article>
+      <article class="kpi-card"><p>Today</p><h2>${totals.today}</h2></article>
+    </section>
+
+    <section class="card wide">
+      <div class="card-header"><h3>Activity Logs</h3></div>
+      <div class="inline-actions">
+        <button
+          type="button"
+          class="btn btn-outline"
+          id="downloadActivityLogsBtn"
+          ${entries.length > 0 ? "" : "disabled"}
+        >Download Logs JSON</button>
+        <button
+          type="button"
+          class="btn btn-danger"
+          id="clearActivityLogsBtn"
+          ${entries.length > 0 ? "" : "disabled"}
+        >Clear Logs</button>
+      </div>
+      <div class="table-search" style="margin-top:10px;">
+        <input
+          id="activityLogsSearchInput"
+          class="table-input"
+          type="search"
+          placeholder="Quick find by action, summary, page, user, or branch"
+          value="${escapeHtml(state.quickSearch.activityLogs)}"
+        />
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Action</th>
+              <th>Page</th>
+              <th>Branch</th>
+              <th>User</th>
+              <th>Summary</th>
+              <th>Details</th>
+            </tr>
+          </thead>
+          <tbody id="activityLogsTableBody">
+            ${rows || '<tr><td colspan="7" class="empty-state">No activity captured yet.</td></tr>'}
+            ${
+              rows
+                ? '<tr id="activityLogsSearchEmptyRow" class="hidden"><td colspan="7" class="empty-state">No logs match your search.</td></tr>'
+                : ""
+            }
+          </tbody>
+        </table>
+      </div>
+      <p class="page-note">Captures save/add/delete/backup actions. Keeps latest ${ACTIVITY_LOG_LIMIT} logs.</p>
+    </section>
+  `;
+}
+
 function renderDeleteDataPage() {
   if (!hasPermission(state.currentUser, "delete_center")) {
     return `
@@ -3797,6 +4417,10 @@ function renderActivePage() {
       return renderReportsPage();
     case "monthly_calculations":
       return renderMonthlyCalculationsPage();
+    case "error_logs":
+      return renderErrorLogsPage();
+    case "activity_logs":
+      return renderActivityLogsPage();
     case "about":
       return renderAboutPage();
     case "settings":
@@ -4206,6 +4830,11 @@ function exportBackup() {
   const payload = buildBackupPayloadString();
   const filename = buildBackupFileName("fishops-backup", state.date, state.branchId);
   triggerBackupDownload(payload, filename);
+  saveStore({
+    activityCategory: "backup",
+    activityAction: "Downloaded backup file",
+    activityDetails: { filename }
+  });
 }
 
 function normalizeImportedBackupPayload(parsed) {
@@ -4242,6 +4871,10 @@ function normalizeImportedBackupPayload(parsed) {
     payloadData.hold_stock_entry === undefined
       ? []
       : normalizeCollection(payloadData.hold_stock_entry, "hold_stock_entry");
+  const activityRows =
+    payloadData.activity_logs === undefined
+      ? []
+      : normalizeCollection(payloadData.activity_logs, "activity_logs");
 
   const defaults = createDefaultStore();
   const settingsSource =
@@ -4255,7 +4888,8 @@ function normalizeImportedBackupPayload(parsed) {
       branch_fish_settings: collections.branch_fish_settings,
       daily_prices: collections.daily_prices,
       daily_stock_entry: collections.daily_stock_entry,
-      hold_stock_entry: holdStockRows
+      hold_stock_entry: holdStockRows,
+      activity_logs: activityRows
     },
     settings: {
       ...defaults.settings,
@@ -4286,12 +4920,22 @@ async function importBackupFromFile(file) {
     (user) => user.id === previousUserId && user.status === "active"
   );
   if (!currentUser) {
+    saveStore({
+      activityCategory: "backup",
+      activityAction: "Imported backup file",
+      activityDetails: { file: file.name || "" }
+    });
     endSession();
     alert("Backup imported. Please log in again.");
     return;
   }
 
   state.currentUser = currentUser;
+  saveStore({
+    activityCategory: "backup",
+    activityAction: "Imported backup file",
+    activityDetails: { file: file.name || "" }
+  });
   populateBranchSelector();
   renderApp();
   alert("Backup imported successfully.");
@@ -4657,7 +5301,10 @@ function bindUsersPageEvents() {
       status,
       photo: ""
     });
-    saveStore();
+    saveStore({
+      activityAction: "Added user account",
+      activityDetails: { username, role, branch_id: scopedBranch || "GLOBAL", status }
+    });
     renderApp();
   });
 
@@ -4694,14 +5341,20 @@ function bindUsersPageEvents() {
         state.currentUser = user;
         if (user.status !== "active") {
           alert("Current session user is now inactive. Please login again.");
-          saveStore();
+          saveStore({
+            activityAction: "Updated user account and marked current session inactive",
+            activityDetails: { username: user.username, status: user.status }
+          });
           endSession();
           return;
         }
         populateBranchSelector();
       }
 
-      saveStore();
+      saveStore({
+        activityAction: "Updated user account",
+        activityDetails: { username: user.username, role: user.role, status: user.status }
+      });
       renderApp();
     });
   });
@@ -4731,7 +5384,10 @@ function bindUsersPageEvents() {
       }
 
       DATA.users = DATA.users.filter((entry) => entry.id !== userId);
-      saveStore();
+      saveStore({
+        activityAction: "Deleted user account",
+        activityDetails: { username: user.username, role: user.role }
+      });
 
       if (state.currentUser?.id === userId) {
         endSession();
@@ -4743,6 +5399,13 @@ function bindUsersPageEvents() {
 }
 
 function bindFishPageEvents() {
+  bindFishQuickSearch(
+    "fishProfilesSearchInput",
+    "fishProfilesTableBody",
+    "fishProfilesSearchEmptyRow",
+    "fishProfiles"
+  );
+
   if (isWriteRestricted()) {
     return;
   }
@@ -4782,7 +5445,10 @@ function bindFishPageEvents() {
       unit,
       status
     });
-    saveStore();
+    saveStore({
+      activityAction: "Added fish profile",
+      activityDetails: { fish_code: fishCode, name, category, unit, status }
+    });
     renderApp();
   });
 
@@ -4810,7 +5476,10 @@ function bindFishPageEvents() {
       fish.category = category;
       fish.unit = unit;
       fish.status = status;
-      saveStore();
+      saveStore({
+        activityAction: "Updated fish profile",
+        activityDetails: { fish_code: fish.fish_code, name: fish.name, status: fish.status }
+      });
       renderApp();
     });
   });
@@ -4823,7 +5492,10 @@ function bindFishPageEvents() {
         return;
       }
       fish.status = fish.status === "active" ? "inactive" : "active";
-      saveStore();
+      saveStore({
+        activityAction: "Toggled fish profile status",
+        activityDetails: { fish_code: fish.fish_code, status: fish.status }
+      });
       renderApp();
     });
   });
@@ -4851,7 +5523,10 @@ function bindFishPageEvents() {
       DATA.daily_prices = DATA.daily_prices.filter((item) => item.fish_id !== fishId);
       DATA.daily_stock_entry = DATA.daily_stock_entry.filter((item) => item.fish_id !== fishId);
       DATA.hold_stock_entry = DATA.hold_stock_entry.filter((item) => item.fish_id !== fishId);
-      saveStore();
+      saveStore({
+        activityAction: "Deleted fish profile and related records",
+        activityDetails: { fish_code: fish.fish_code, name: fish.name }
+      });
       renderApp();
     });
   });
@@ -4890,7 +5565,16 @@ function bindBranchSettingsEvents() {
     }
 
     upsertBranchSetting(state.branchId, fishId, minStock, targetStock, isActive);
-    saveStore();
+    saveStore({
+      activityAction: "Added branch fish setting",
+      activityDetails: {
+        branch_id: state.branchId,
+        fish_code: fish.fish_code,
+        min_stock: minStock,
+        target_stock: targetStock,
+        is_active: isActive
+      }
+    });
     renderApp();
   });
 
@@ -4919,7 +5603,17 @@ function bindBranchSettingsEvents() {
       setting.min_stock = minStock;
       setting.target_stock = targetStock;
       setting.is_active = isActive;
-      saveStore();
+      const fish = findFishById(setting.fish_id);
+      saveStore({
+        activityAction: "Updated branch fish setting",
+        activityDetails: {
+          branch_id: setting.branch_id,
+          fish_code: fish?.fish_code || setting.fish_id,
+          min_stock: minStock,
+          target_stock: targetStock,
+          is_active: isActive
+        }
+      });
       renderApp();
     });
   });
@@ -4930,8 +5624,16 @@ function bindBranchSettingsEvents() {
       if (!settingId) {
         return;
       }
+      const existing = DATA.branch_fish_settings.find((item) => item.id === settingId);
       DATA.branch_fish_settings = DATA.branch_fish_settings.filter((item) => item.id !== settingId);
-      saveStore();
+      const fish = existing ? findFishById(existing.fish_id) : null;
+      saveStore({
+        activityAction: "Deleted branch fish setting",
+        activityDetails: {
+          branch_id: existing?.branch_id || "",
+          fish_code: fish?.fish_code || existing?.fish_id || settingId
+        }
+      });
       renderApp();
     });
   });
@@ -4971,7 +5673,16 @@ function bindDailyPricesEvents() {
       auto_price_from: "",
       price_source: "morning"
     });
-    saveStore();
+    saveStore({
+      activityAction: "Added daily price",
+      activityDetails: {
+        branch_id: state.branchId,
+        date: state.date,
+        fish_code: fish.fish_code,
+        sell_price_per_unit: sell,
+        cost_price_per_unit: cost
+      }
+    });
     renderApp();
   });
 
@@ -4991,7 +5702,17 @@ function bindDailyPricesEvents() {
       price.cost_price_per_unit = cost;
       price.auto_price_from = "";
       price.price_source = "morning";
-      saveStore();
+      const fish = findFishById(price.fish_id);
+      saveStore({
+        activityAction: "Updated daily price",
+        activityDetails: {
+          branch_id: price.branch_id,
+          date: price.date,
+          fish_code: fish?.fish_code || price.fish_id,
+          sell_price_per_unit: sell,
+          cost_price_per_unit: cost
+        }
+      });
       renderApp();
     });
   });
@@ -5002,8 +5723,17 @@ function bindDailyPricesEvents() {
       if (!priceId) {
         return;
       }
+      const existing = DATA.daily_prices.find((item) => item.id === priceId);
       DATA.daily_prices = DATA.daily_prices.filter((item) => item.id !== priceId);
-      saveStore();
+      const fish = existing ? findFishById(existing.fish_id) : null;
+      saveStore({
+        activityAction: "Deleted daily price",
+        activityDetails: {
+          branch_id: existing?.branch_id || "",
+          date: existing?.date || "",
+          fish_code: fish?.fish_code || existing?.fish_id || priceId
+        }
+      });
       renderApp();
     });
   });
@@ -5081,7 +5811,16 @@ function bindHoldStockEvents() {
     };
 
     DATA.hold_stock_entry.push(holdEntry);
-    saveStore();
+    saveStore({
+      activityAction: "Added hold stock entry",
+      activityDetails: {
+        branch_id: holdEntry.branch_id,
+        date: holdEntry.date,
+        fish_code: holdEntry.fish_code,
+        fish_count: holdEntry.fish_count,
+        full_qty_kg: holdEntry.full_qty_kg
+      }
+    });
     renderApp();
     alert("Hold stock added.");
   });
@@ -5127,7 +5866,15 @@ function bindHoldStockEvents() {
       entry.sell_price_per_kg = metrics.sellPricePerKgLkr;
       entry.status = "cut";
       entry.cut_at = new Date().toISOString();
-      saveStore();
+      saveStore({
+        activityAction: "Cut hold stock entry",
+        activityDetails: {
+          hold_id: entry.id,
+          fish_code: entry.fish_code,
+          usable_qty_kg: entry.usable_qty_kg,
+          waste_qty_kg: entry.waste_qty_kg
+        }
+      });
       renderApp();
       alert("Cut completed. You can move this stock now.");
     });
@@ -5157,7 +5904,14 @@ function bindHoldStockEvents() {
         alert("Unable to move this hold stock entry.");
         return;
       }
-      saveStore();
+      saveStore({
+        activityAction: "Moved hold stock to operational stock",
+        activityDetails: {
+          hold_id: entry.id,
+          fish_code: entry.fish_code,
+          moved_to_date: moved
+        }
+      });
       renderApp();
       alert(`Hold stock moved to current stock for ${moved}. Closing/waste and daily price updated.`);
     });
@@ -5176,8 +5930,17 @@ function bindHoldStockEvents() {
       if (!ok) {
         return;
       }
+      const existing = DATA.hold_stock_entry.find((row) => row.id === holdId);
       DATA.hold_stock_entry = DATA.hold_stock_entry.filter((row) => row.id !== holdId);
-      saveStore();
+      saveStore({
+        activityAction: "Deleted hold stock entry",
+        activityDetails: {
+          hold_id: holdId,
+          fish_code: existing?.fish_code || "",
+          date: existing?.date || "",
+          branch_id: existing?.branch_id || ""
+        }
+      });
       renderApp();
     });
   });
@@ -5235,7 +5998,14 @@ function bindOpeningEvents() {
         auto_opening_from: keepAutoSource ? existingAutoSource : ""
       });
     }
-    saveStore();
+    saveStore({
+      activityAction: "Saved morning opening stock",
+      activityDetails: {
+        branch_id: state.branchId,
+        date: state.date,
+        rows_updated: rows.length
+      }
+    });
     alert("Opening stock saved.");
     renderApp();
   });
@@ -5271,13 +6041,32 @@ function bindClosingEvents() {
       });
     }
     const carry = autoCarryClosingToNextDay(state.branchId, state.date);
-    const persisted = saveStore();
+    const persisted = saveStore({
+      activityAction: "Saved night closing stock",
+      activityDetails: {
+        branch_id: state.branchId,
+        date: state.date,
+        rows_updated: rows.length,
+        auto_carry_count: carry.movedCount
+      }
+    });
     if (!persisted) {
       renderApp();
       return;
     }
 
     const backupResult = await runAutoBackupAfterClosing(state.branchId, state.date);
+    if (backupResult.message) {
+      saveStore({
+        activityCategory: "backup",
+        activityAction: "Auto backup after closing stock",
+        activityDetails: {
+          branch_id: state.branchId,
+          date: state.date,
+          result: backupResult.message
+        }
+      });
+    }
     let message = "Closing stock saved.";
     if (carry.movedCount > 0) {
       message = `Closing stock saved. ${carry.movedCount} item(s) auto-moved to opening stock for ${carry.nextDate}.`;
@@ -5292,6 +6081,108 @@ function bindClosingEvents() {
 
 function bindDashboardEvents() {
   // Reserved for dashboard-only interactions.
+}
+
+function bindDailySummaryEvents() {
+  bindFishQuickSearch(
+    "dailySummarySearchInput",
+    "dailySummaryTableBody",
+    "dailySummarySearchEmptyRow",
+    "dailySummary"
+  );
+}
+
+function bindErrorLogsEvents() {
+  bindFishQuickSearch(
+    "errorLogsSearchInput",
+    "errorLogsTableBody",
+    "errorLogsSearchEmptyRow",
+    "errorLogs"
+  );
+
+  const downloadBtn = document.getElementById("downloadErrorLogsBtn");
+  const clearBtn = document.getElementById("clearErrorLogsBtn");
+
+  downloadBtn?.addEventListener("click", () => {
+    if (clientErrorLogs.length === 0) {
+      return;
+    }
+
+    const payload = {
+      exported_at: new Date().toISOString(),
+      total: clientErrorLogs.length,
+      logs: clientErrorLogs
+    };
+
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `fishops-activity-logs-${isoDateToday()}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  });
+
+  clearBtn?.addEventListener("click", () => {
+    if (clientErrorLogs.length === 0) {
+      return;
+    }
+    const ok = window.confirm("Clear all captured error logs?");
+    if (!ok) {
+      return;
+    }
+    clientErrorLogs.length = 0;
+    renderApp();
+  });
+}
+
+function bindActivityLogsEvents() {
+  bindFishQuickSearch(
+    "activityLogsSearchInput",
+    "activityLogsTableBody",
+    "activityLogsSearchEmptyRow",
+    "activityLogs"
+  );
+
+  const downloadBtn = document.getElementById("downloadActivityLogsBtn");
+  const clearBtn = document.getElementById("clearActivityLogsBtn");
+
+  downloadBtn?.addEventListener("click", () => {
+    if (!Array.isArray(DATA.activity_logs) || DATA.activity_logs.length === 0) {
+      return;
+    }
+
+    const payload = {
+      exported_at: new Date().toISOString(),
+      total: DATA.activity_logs.length,
+      logs: DATA.activity_logs
+    };
+
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `fishops-activity-logs-${isoDateToday()}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  });
+
+  clearBtn?.addEventListener("click", () => {
+    if (!Array.isArray(DATA.activity_logs) || DATA.activity_logs.length === 0) {
+      return;
+    }
+    const ok = window.confirm("Clear all activity logs?");
+    if (!ok) {
+      return;
+    }
+    DATA.activity_logs = [];
+    saveStore({ logActivity: false });
+    renderApp();
+  });
 }
 
 function bindReportsEvents() {
@@ -5338,7 +6229,10 @@ function bindSettingsEvents() {
   settingsUploadLogoBtn?.addEventListener("click", openLogoPicker);
   settingsClearLogoBtn?.addEventListener("click", () => {
     state.settings.company_logo = "";
-    saveStore();
+    saveStore({
+      activityAction: "Cleared company logo",
+      activityDetails: "Logo image removed from settings."
+    });
     applyBranding();
     renderApp();
   });
@@ -5350,7 +6244,11 @@ function bindSettingsEvents() {
 
     const result = await chooseDailyBackupDirectory();
     if (result.ok) {
-      saveStore();
+      saveStore({
+        activityCategory: "backup",
+        activityAction: "Selected daily backup folder",
+        activityDetails: { folder_label: state.settings.auto_backup_location_label || "" }
+      });
       if (dailyBackupFolderLabelInput) {
         dailyBackupFolderLabelInput.value =
           state.settings.auto_backup_location_label || "Not selected";
@@ -5373,7 +6271,11 @@ function bindSettingsEvents() {
       return;
     }
     await clearDailyBackupDirectory();
-    saveStore();
+    saveStore({
+      activityCategory: "backup",
+      activityAction: "Cleared daily backup folder",
+      activityDetails: "Auto backup folder selection removed."
+    });
     if (dailyBackupFolderLabelInput) {
       dailyBackupFolderLabelInput.value = "Not selected";
     }
@@ -5406,7 +6308,15 @@ function bindSettingsEvents() {
       state.settings.auto_backup_after_closing = Boolean(autoBackupAfterClosingInput?.checked);
     }
 
-    saveStore();
+    saveStore({
+      activityAction: "Updated application settings",
+      activityDetails: {
+        company_name: state.settings.company_name,
+        currency: state.settings.currency,
+        maintenance_mode: state.settings.maintenance_mode,
+        auto_backup_after_closing: state.settings.auto_backup_after_closing
+      }
+    });
     applyBranding();
     renderApp();
 
@@ -5451,7 +6361,10 @@ function bindSettingsEvents() {
 
       branch.name = branchName;
       branch.location = branchLocation;
-      saveStore();
+      saveStore({
+        activityAction: "Updated branch details",
+        activityDetails: { branch_id: branch.id, name: branch.name, location: branch.location }
+      });
       populateBranchSelector();
       renderApp();
       alert(`Branch "${branchId}" updated.`);
@@ -5493,7 +6406,10 @@ function bindSettingsEvents() {
       if (state.branchId === branchId) {
         state.branchId = "";
       }
-      saveStore();
+      saveStore({
+        activityAction: "Deleted branch",
+        activityDetails: { branch_id: branchId, linked_records: linkedCount }
+      });
       populateBranchSelector();
       renderApp();
       alert(`Branch "${branchId}" deleted.`);
@@ -5527,7 +6443,10 @@ function bindSettingsEvents() {
       status: "active"
     });
 
-    saveStore();
+    saveStore({
+      activityAction: "Added branch",
+      activityDetails: { branch_id: branchId, name: branchName, location: branchLocation }
+    });
     state.branchId = branchId;
     populateBranchSelector();
     renderApp();
@@ -5612,7 +6531,8 @@ function fullWipeAllDataForMaster() {
     branch_fish_settings: [],
     daily_prices: [],
     daily_stock_entry: [],
-    hold_stock_entry: []
+    hold_stock_entry: [],
+    activity_logs: []
   };
 
   state.settings = clone(DEFAULT_STORE.settings);
@@ -5620,7 +6540,11 @@ function fullWipeAllDataForMaster() {
     // ignore backup folder cleanup failures
   });
   applyBranding();
-  saveStore();
+  saveStore({
+    activityCategory: "delete",
+    activityAction: "Executed full data wipe",
+    activityDetails: "Reset operational records and settings to default."
+  });
 }
 
 function bindDeleteDataEvents() {
@@ -5650,7 +6574,11 @@ function bindDeleteDataEvents() {
         return;
       }
 
-      saveStore();
+      saveStore({
+        activityCategory: "delete",
+        activityAction: "Deleted data category",
+        activityDetails: { category, label: categoryLabel }
+      });
       renderApp();
     });
   });
@@ -5701,6 +6629,15 @@ function bindActivePageEvents() {
       break;
     case "night_closing_stock":
       bindClosingEvents();
+      break;
+    case "daily_summary":
+      bindDailySummaryEvents();
+      break;
+    case "error_logs":
+      bindErrorLogsEvents();
+      break;
+    case "activity_logs":
+      bindActivityLogsEvents();
       break;
     case "reports":
       bindReportsEvents();
@@ -5756,7 +6693,7 @@ function applyRoleUiConstraints() {
 
 function renderApp() {
   const currentPage = PAGES.find((page) => page.id === state.activePage);
-  if (!currentPage || !hasPermission(state.currentUser, currentPage.permission)) {
+  if (!currentPage || !canAccessPage(state.currentUser, currentPage)) {
     state.activePage = getVisiblePages(state.currentUser)[0]?.id || "dashboard";
   }
 
@@ -5786,9 +6723,13 @@ function startSession(user) {
         : branches[0]?.id || "";
   }
   state.activePage = "dashboard";
+  state.quickSearch.fishProfiles = "";
   state.quickSearch.branchFishSettings = "";
   state.quickSearch.dailyPrices = "";
   state.quickSearch.yDailyPrices = "";
+  state.quickSearch.dailySummary = "";
+  state.quickSearch.errorLogs = "";
+  state.quickSearch.activityLogs = "";
   state.quickSearch.holdStock = "";
   state.quickSearch.remainingStocks = "";
   state.quickSearch.remainingHolds = "";
@@ -5802,15 +6743,34 @@ function startSession(user) {
   renderApp();
   ui.loginScreen.classList.add("hidden");
   ui.appShell.classList.remove("hidden");
+  saveStore({
+    activityCategory: "auth",
+    activityAction: "User login",
+    activityDetails: { username: user.username, role: user.role },
+    activityPageId: "dashboard"
+  });
   startRemoteStorePolling();
   void checkForRemoteStoreUpdate();
 }
 
 function endSession() {
+  if (state.currentUser) {
+    saveStore({
+      activityCategory: "auth",
+      activityAction: "User logout",
+      activityDetails: { username: state.currentUser.username, role: state.currentUser.role },
+      activityPageId: state.activePage
+    });
+  }
+
   state.currentUser = null;
+  state.quickSearch.fishProfiles = "";
   state.quickSearch.branchFishSettings = "";
   state.quickSearch.dailyPrices = "";
   state.quickSearch.yDailyPrices = "";
+  state.quickSearch.dailySummary = "";
+  state.quickSearch.errorLogs = "";
+  state.quickSearch.activityLogs = "";
   state.quickSearch.holdStock = "";
   state.quickSearch.remainingStocks = "";
   state.quickSearch.remainingHolds = "";
@@ -5888,6 +6848,7 @@ function wireEvents() {
 }
 
 async function init() {
+  installClientErrorCapture();
   loadStore();
   await reloadStoreFromServer(false);
   const stockDataPurged = purgeStockDataIfNeeded();
