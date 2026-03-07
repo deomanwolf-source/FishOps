@@ -227,6 +227,25 @@ sudo systemctl restart fishops
 sudo systemctl status fishops
 ```
 
+### PM2 (persistent with `.env`)
+
+Create `.env` from `.env.example` and set `DATABASE_URL`.
+
+Start or recreate process using ecosystem config:
+
+```bash
+cd ~/Desktop/FishOps
+pm2 delete fishops || true
+pm2 start ecosystem.config.cjs --update-env
+pm2 save
+```
+
+After editing `.env`, reload env variables:
+
+```bash
+pm2 restart ecosystem.config.cjs --only fishops --update-env
+```
+
 ## Notes
 
 - Password is plain text in the model for now, matching your requirement to hash later.
