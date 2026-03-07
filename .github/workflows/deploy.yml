@@ -1,0 +1,19 @@
+name: Deploy FishOps
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+
+    steps:
+      - name: Deploy
+        run: |
+          cd ~/Desktop/FishOps
+          git fetch origin
+          git reset --hard origin/main
+          npm install
+          pm2 restart fishops
