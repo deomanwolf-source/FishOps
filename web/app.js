@@ -7086,7 +7086,7 @@ function registerServiceWorker() {
     return;
   }
   navigator.serviceWorker
-    .register("./service-worker.js?v=20260308-12")
+    .register("./service-worker.js?v=20260308-13")
     .then((registration) => {
       registration.addEventListener("updatefound", () => {
         const installingWorker = registration.installing;
@@ -9688,7 +9688,11 @@ async function loginWithApi(username, password) {
     return {
       user: null,
       error: String(payload?.error || "Invalid username or password."),
-      fallbackToLocal: response.status === 404 || response.status === 405 || response.status >= 500
+      fallbackToLocal:
+        response.status === 401 ||
+        response.status === 404 ||
+        response.status === 405 ||
+        response.status >= 500
     };
   }
 
@@ -9848,5 +9852,6 @@ init().catch((error) => {
   captureAppError(error, { level: "ERROR", details: "init() failed" });
   alert("Application initialization failed. Check Error Logs tab after reload.");
 });
+
 
 

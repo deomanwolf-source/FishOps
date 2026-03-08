@@ -1,10 +1,10 @@
-const CACHE_NAME = "fishops-cache-v28";
+const CACHE_NAME = "fishops-cache-v29";
 const CACHE_URLS = [
   "./",
   "./index.html",
   "./manifest.json",
   "./web/styles.css",
-  "./web/app.js?v=20260308-12",
+  "./web/app.js?v=20260308-13",
   "./web/icon-192.png",
   "./web/icon-512.png"
 ];
@@ -83,4 +83,5 @@ self.addEventListener("fetch", (event) => {
     })
   );
 });
+
 
