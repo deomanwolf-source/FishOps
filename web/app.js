@@ -388,8 +388,8 @@ function addActivityLogEntry(activity = {}) {
   });
 
   DATA.activity_logs.unshift(entry);
-  if (DATA.activity_logs.length > ACTIVITY_LOG_LIMIT) {
-    DATA.activity_logs.length = ACTIVITY_LOG_LIMIT;
+  if (DATA.activity_logs.length > MAX_ACTIVITY_LOGS) {
+    DATA.activity_logs.length = MAX_ACTIVITY_LOGS;
   }
   return entry;
 }
@@ -463,8 +463,8 @@ function addClientErrorLog(details = {}) {
     username: String(state.currentUser?.username || "")
   });
 
-  if (clientErrorLogs.length > CLIENT_ERROR_LOG_LIMIT) {
-    clientErrorLogs.length = CLIENT_ERROR_LOG_LIMIT;
+  if (clientErrorLogs.length > MAX_APP_ERROR_LOGS) {
+    clientErrorLogs.length = MAX_APP_ERROR_LOGS;
   }
 }
 
@@ -6453,7 +6453,7 @@ function renderErrorLogsPage() {
           </tbody>
         </table>
       </div>
-      <p class="page-note">Captures current-session client errors. Keeps latest ${CLIENT_ERROR_LOG_LIMIT} logs.</p>
+      <p class="page-note">Captures current-session client errors. Keeps latest ${MAX_APP_ERROR_LOGS} logs.</p>
     </section>
   `;
 }
@@ -6622,7 +6622,7 @@ function renderActivityLogsPage() {
           </tbody>
         </table>
       </div>
-      <p class="page-note">Captures save/add/delete/backup actions. Keeps latest ${ACTIVITY_LOG_LIMIT} logs.</p>
+      <p class="page-note">Captures save/add/delete/backup actions. Keeps latest ${MAX_ACTIVITY_LOGS} logs.</p>
     </section>
   `;
 }
@@ -7385,7 +7385,7 @@ function registerServiceWorker() {
     return;
   }
   navigator.serviceWorker
-    .register("./service-worker.js")
+    .register("./service-worker.js?v=20260308-11")
     .then((registration) => {
       registration.addEventListener("updatefound", () => {
         const installingWorker = registration.installing;
@@ -10086,20 +10086,24 @@ async function loginWithApi(username, password) {
 
 async function handleLoginSubmit(event) {
   event.preventDefault();
-  const username = ui.usernameInput.value.trim();
-  const password = ui.passwordInput.value;
-  if (!username || !password) {
-    ui.loginError.textContent = "Username and password are required.";
-    return;
-  }
-
-  ui.loginError.textContent = "";
   const submitButton = ui.loginForm.querySelector('button[type="submit"]');
-  if (submitButton) {
-    submitButton.disabled = true;
-  }
-
   try {
+    const username = ui.usernameInput.value.trim();
+    const password = ui.passwordInput.value;
+    if (!username || !password) {
+      ui.loginError.textContent = "Username and password are required.";
+      return;
+    }
+
+    if (!DATA || !Array.isArray(DATA.users)) {
+      loadStore();
+    }
+
+    ui.loginError.textContent = "";
+    if (submitButton) {
+      submitButton.disabled = true;
+    }
+
     const remoteLogin = await loginWithApi(username, password);
     let user = remoteLogin.user;
 
@@ -10120,6 +10124,9 @@ async function handleLoginSubmit(event) {
     }
 
     startSession(user);
+  } catch (error) {
+    captureAppError(error, { level: "ERROR", details: "login submit failed" });
+    ui.loginError.textContent = "Login failed. Please reload and try again.";
   } finally {
     if (submitButton) {
       submitButton.disabled = false;
@@ -10183,6 +10190,7 @@ function wireEvents() {
 
 async function init() {
   installClientErrorCapture();
+  wireEvents();
   loadStore();
   await reloadStoreFromServer(false);
   const stockDataPurged = purgeStockDataIfNeeded();
@@ -10200,7 +10208,6 @@ async function init() {
   applyBranding();
   setupInstallPromptListeners();
   registerServiceWorker();
-  wireEvents();
   ui.usernameInput.focus();
 }
 
