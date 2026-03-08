@@ -96,6 +96,7 @@ const ROLE_PERMISSIONS = {
     "set_daily_prices",
     "manage_hold_stock",
     "manage_shop_orders",
+    "view_billing_progress",
     "enter_opening_stock",
     "enter_closing_stock",
     "enter_waste",
@@ -3300,19 +3301,19 @@ function renderDailySummaryTable(rows, options = {}) {
           <td>${row.sold.toFixed(2)} ${escapeHtml(row.fish.unit)}</td>
           <td>${row.yStock.toFixed(2)} ${escapeHtml(row.fish.unit)}</td>
           <td>${row.yRevenue === null ? "-" : money(row.yRevenue)}</td>
-          <td>${row.yCost === null ? "-" : money(row.yCost)}</td>
+          <td class="${row.yCost === null ? "" : "cost-negative"}">${row.yCost === null ? "-" : money(row.yCost)}</td>
           <td class="${(row.yProfit || 0) >= 0 ? "profit-positive" : "profit-negative"}">${
             row.yProfit === null ? "-" : money(row.yProfit)
           }</td>
           <td>${row.normalRevenue === null ? "-" : money(row.normalRevenue)}</td>
-          <td>${row.normalCost === null ? "-" : money(row.normalCost)}</td>
+          <td class="${row.normalCost === null ? "" : "cost-negative"}">${row.normalCost === null ? "-" : money(row.normalCost)}</td>
           <td class="${(row.normalProfit || 0) >= 0 ? "profit-positive" : "profit-negative"}">${
             row.normalProfit === null ? "-" : money(row.normalProfit)
           }</td>
           <td>${row.closing.toFixed(2)} ${escapeHtml(row.fish.unit)}</td>
           <td>${row.waste.toFixed(2)} ${escapeHtml(row.fish.unit)}</td>
           <td>${row.revenue === null ? "-" : money(row.revenue)}</td>
-          <td>${row.cost === null ? "-" : money(row.cost)}</td>
+          <td class="${row.cost === null ? "" : "cost-negative"}">${row.cost === null ? "-" : money(row.cost)}</td>
           <td class="${(row.profit || 0) >= 0 ? "profit-positive" : "profit-negative"}">${
             row.profit === null ? "-" : money(row.profit)
           }</td>
@@ -3374,7 +3375,7 @@ function renderDashboardPage() {
   return `
     <section class="kpi-grid">
       <article class="kpi-card"><p>Revenue</p><h2>${money(totals.revenue)}</h2></article>
-      <article class="kpi-card"><p>Cost</p><h2>${money(totals.cost)}</h2></article>
+      <article class="kpi-card"><p>Cost</p><h2 class="cost-negative">${money(totals.cost)}</h2></article>
       <article class="kpi-card"><p>Profit</p><h2 class="${
         totals.profit >= 0 ? "profit-positive" : "profit-negative"
       }">${money(totals.profit)}</h2></article>
@@ -5147,7 +5148,7 @@ function renderDailySummaryPage() {
   return `
     <section class="kpi-grid">
       <article class="kpi-card"><p>Total Revenue</p><h2>${money(totals.revenue)}</h2></article>
-      <article class="kpi-card"><p>Total Cost</p><h2>${money(totals.cost)}</h2></article>
+      <article class="kpi-card"><p>Total Cost</p><h2 class="cost-negative">${money(totals.cost)}</h2></article>
       <article class="kpi-card"><p>Total Profit</p><h2 class="${
         totals.profit >= 0 ? "profit-positive" : "profit-negative"
       }">${money(totals.profit)}</h2></article>
@@ -5813,7 +5814,7 @@ function renderMonthlyCalculationsPage() {
 
     <section class="kpi-grid">
       <article class="kpi-card"><p>Revenue</p><h2>${money(summary.totals.revenue)}</h2></article>
-      <article class="kpi-card"><p>Cost</p><h2>${money(summary.totals.cost)}</h2></article>
+      <article class="kpi-card"><p>Cost</p><h2 class="cost-negative">${money(summary.totals.cost)}</h2></article>
       <article class="kpi-card"><p>Profit</p><h2 class="${
         summary.totals.profit >= 0 ? "profit-positive" : "profit-negative"
       }">${money(summary.totals.profit)}</h2></article>
@@ -5866,7 +5867,7 @@ function renderMonthlyCalculationsPage() {
                           <td>${row.sold.toFixed(2)}</td>
                           <td>${row.waste.toFixed(2)}</td>
                           <td>${money(row.revenue)}</td>
-                          <td>${money(row.cost)}</td>
+                          <td class="cost-negative">${money(row.cost)}</td>
                           <td class="${row.profit >= 0 ? "profit-positive" : "profit-negative"}">${money(
                             row.profit
                           )}</td>
@@ -5886,11 +5887,11 @@ function renderMonthlyCalculationsPage() {
 }
 
 function renderBillingProgressPage() {
-  if (state.currentUser?.role !== "master") {
+  if (!hasPermission(state.currentUser, "view_billing_progress")) {
     return `
       <section class="card wide">
         <div class="card-header"><h3>Daily Sell Billing Progress</h3></div>
-        <p class="empty-state">Only master can access Billing Progress.</p>
+        <p class="empty-state">You do not have access to Billing Progress.</p>
       </section>
     `;
   }
@@ -5923,7 +5924,7 @@ function renderBillingProgressPage() {
           <td>${metrics.bills}</td>
           <td>${money(metrics.revenue)}</td>
           <td>${money(metrics.income)}</td>
-          <td>${money(metrics.profit)}</td>
+          <td class="${metrics.profit >= 0 ? "profit-positive" : "profit-negative"}">${money(metrics.profit)}</td>
         </tr>
       `;
     })
@@ -5937,7 +5938,7 @@ function renderBillingProgressPage() {
         <input id="billingProgressDateInput" class="table-input" type="date" value="${escapeHtml(summary.date)}" />
       </div>
       <p class="page-note">
-        Scope: ${escapeHtml(getBranchScopeLabel(state.branchId))} | Date: ${escapeHtml(summary.date)} | Master dashboard for daily sell billing.
+        Scope: ${escapeHtml(getBranchScopeLabel(state.branchId))} | Date: ${escapeHtml(summary.date)} | Dashboard for daily sell billing.
       </p>
       <p class="page-note">
         Billing Progress uses only Billing records. Income/Profit here are capped to bill total (overpayment/change is excluded).
@@ -5948,7 +5949,9 @@ function renderBillingProgressPage() {
       <article class="kpi-card"><p>Total Bills</p><h2>${summary.totals.bills}</h2></article>
       <article class="kpi-card"><p>Revenue</p><h2>${money(summary.totals.revenue)}</h2></article>
       <article class="kpi-card"><p>Income</p><h2>${money(summary.totals.income)}</h2></article>
-      <article class="kpi-card"><p>Profit</p><h2>${money(summary.totals.profit)}</h2></article>
+      <article class="kpi-card"><p>Profit</p><h2 class="${
+        summary.totals.profit >= 0 ? "profit-positive" : "profit-negative"
+      }">${money(summary.totals.profit)}</h2></article>
       <article class="kpi-card"><p>Avg Bill Value</p><h2>${money(avgBill)}</h2></article>
     </section>
 
@@ -6016,7 +6019,9 @@ function renderBillingProgressPage() {
                           <td>${escapeHtml(paymentMethodLabel(row.payment_method))}</td>
                           <td>${money(row.revenue)}</td>
                           <td>${money(row.income)}</td>
-                          <td>${money(row.profit)}</td>
+                          <td class="${row.profit >= 0 ? "profit-positive" : "profit-negative"}">${money(
+                            row.profit
+                          )}</td>
                         </tr>
                       `
                     )
@@ -9044,7 +9049,7 @@ function bindMonthlyCalculationsEvents() {
 }
 
 function bindBillingProgressEvents() {
-  if (state.currentUser?.role !== "master") {
+  if (!hasPermission(state.currentUser, "view_billing_progress")) {
     return;
   }
 

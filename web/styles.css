@@ -435,6 +435,11 @@ th {
   font-weight: 600;
 }
 
+.cost-negative {
+  color: var(--danger);
+  font-weight: 600;
+}
+
 .empty-state {
   color: var(--text-secondary);
   font-size: 14px;
