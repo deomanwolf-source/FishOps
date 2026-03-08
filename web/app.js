@@ -133,8 +133,6 @@ const PAGES = [
   { id: "daily_summary", title: "Daily Summary", permission: "view_dashboard" },
   { id: "reports", title: "Reports", permission: "view_reports_today" },
   { id: "transfer_suggestions", title: "Transfer Suggestions", permission: "view_all_branches" },
-  { id: "error_logs", title: "Error Logs", permission: "view_dashboard" },
-  { id: "activity_logs", title: "Activity Logs", permission: "view_dashboard" },
   { id: "monthly_calculations", title: "Monthly Calculations", permission: "view_reports_full" },
   { id: "error_logs", title: "Error Logs", permission: "view_error_logs" },
   { id: "activity_logs", title: "Activity Logs", permission: "view_activity_logs" },
@@ -6334,299 +6332,6 @@ function renderAboutPage() {
   `;
 }
 
-function renderErrorLogsPage() {
-  const totalLogs = clientErrorLogs.length;
-  const runtimeCount = clientErrorLogs.filter((entry) => entry.type === "window-error").length;
-  const rejectionCount = clientErrorLogs.filter((entry) => entry.type === "unhandled-rejection").length;
-  const otherCount = Math.max(0, totalLogs - runtimeCount - rejectionCount);
-  const todayIso = isoDateToday();
-  const todayCount = clientErrorLogs.filter((entry) => localIsoDateFromValue(entry.created_at) === todayIso).length;
-
-  const rows = clientErrorLogs
-    .map((entry) => {
-      const createdAt = new Date(entry.created_at);
-      const createdLabel = Number.isNaN(createdAt.getTime())
-        ? String(entry.created_at || "-")
-        : createdAt.toLocaleString();
-      const actionLabel = getErrorActionLabel(entry.type);
-      const actionChipClass = getErrorActionChipClass(entry.type);
-      const page = String(entry.page || "-");
-      const branch = String(entry.branch_id || "-");
-      const user = String(entry.username || "-");
-      const summary = String(entry.message || "-");
-      const location = String(entry.location || "-");
-      const detailsText = [location, entry.stack].filter(Boolean).join("\n\n");
-      const searchable = [
-        actionLabel,
-        entry.type,
-        summary,
-        page,
-        branch,
-        user,
-        location
-      ]
-        .join(" ")
-        .toLowerCase();
-
-      return `
-        <tr data-fish-search="${escapeHtml(searchable)}">
-          <td>${escapeHtml(createdLabel)}</td>
-          <td><span class="chip ${escapeHtml(actionChipClass)}">${escapeHtml(actionLabel)}</span></td>
-          <td>${escapeHtml(page)}</td>
-          <td>${escapeHtml(branch)}</td>
-          <td>${escapeHtml(user)}</td>
-          <td>${escapeHtml(summary)}</td>
-          <td>
-            <details>
-              <summary>View</summary>
-              <pre class="hint" style="white-space:pre-wrap;margin:6px 0 0;">${escapeHtml(
-                detailsText || "-"
-              )}</pre>
-            </details>
-          </td>
-        </tr>
-      `;
-    })
-    .join("");
-
-  return `
-    <section class="card wide">
-      <div class="card-header"><h3>Activity Logs</h3></div>
-      <p class="page-note">${escapeHtml(getBranchScopeLabel(state.branchId))} | ${escapeHtml(
-        state.date
-      )} | role=${escapeHtml(state.currentUser?.role || "-")}</p>
-    </section>
-
-    <section class="kpi-grid">
-      <article class="kpi-card"><p>Total Logs</p><h2>${totalLogs}</h2></article>
-      <article class="kpi-card"><p>Runtime Errors</p><h2>${runtimeCount}</h2></article>
-      <article class="kpi-card"><p>Promise Rejections</p><h2>${rejectionCount}</h2></article>
-      <article class="kpi-card"><p>Other</p><h2>${otherCount}</h2></article>
-      <article class="kpi-card"><p>Today</p><h2>${todayCount}</h2></article>
-    </section>
-
-    <section class="card wide">
-      <div class="card-header"><h3>Activity Logs</h3></div>
-      <div class="inline-actions">
-        <button
-          type="button"
-          class="btn btn-outline"
-          id="downloadErrorLogsBtn"
-          ${totalLogs > 0 ? "" : "disabled"}
-        >Download Logs JSON</button>
-        <button
-          type="button"
-          class="btn btn-danger"
-          id="clearErrorLogsBtn"
-          ${totalLogs > 0 ? "" : "disabled"}
-        >Clear Logs</button>
-      </div>
-      <div class="table-search" style="margin-top:10px;">
-        <input
-          id="errorLogsSearchInput"
-          class="table-input"
-          type="search"
-          placeholder="Quick find by action, summary, page, user, or branch"
-          value="${escapeHtml(state.quickSearch.errorLogs)}"
-        />
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Time</th>
-              <th>Action</th>
-              <th>Page</th>
-              <th>Branch</th>
-              <th>User</th>
-              <th>Summary</th>
-              <th>Details</th>
-            </tr>
-          </thead>
-          <tbody id="errorLogsTableBody">
-            ${rows || '<tr><td colspan="7" class="empty-state">No errors captured yet.</td></tr>'}
-            ${
-              rows
-                ? '<tr id="errorLogsSearchEmptyRow" class="hidden"><td colspan="7" class="empty-state">No logs match your search.</td></tr>'
-                : ""
-            }
-          </tbody>
-        </table>
-      </div>
-      <p class="page-note">Captures current-session client errors. Keeps latest ${MAX_APP_ERROR_LOGS} logs.</p>
-    </section>
-  `;
-}
-
-function renderActivityLogsPage() {
-  if (state.currentUser?.role !== "master") {
-    return `
-      <section class="card wide">
-        <p class="empty-state">Only master can access Activity Logs.</p>
-      </section>
-    `;
-  }
-
-  const entries = Array.isArray(DATA.activity_logs) ? DATA.activity_logs : [];
-  const totals = entries.reduce(
-    (acc, entry) => {
-      const bucket = getActivityLogBucket(entry);
-      if (bucket === "create_update") {
-        acc.createUpdate += 1;
-      } else if (bucket === "delete_wipe") {
-        acc.deleteWipe += 1;
-      } else if (bucket === "backup_import") {
-        acc.backupImport += 1;
-      }
-      if (localIsoDateFromValue(entry.created_at) === isoDateToday()) {
-        acc.today += 1;
-      }
-      return acc;
-    },
-    { createUpdate: 0, deleteWipe: 0, backupImport: 0, today: 0 }
-  );
-
-  const rows = entries
-    .map((entry) => {
-      const createdAt = new Date(entry.created_at);
-      const createdLabel = Number.isNaN(createdAt.getTime())
-        ? String(entry.created_at || "-")
-        : createdAt.toLocaleString();
-      const bucket = getActivityLogBucket(entry);
-      const actionLabel =
-        bucket === "create_update"
-          ? "Create/Update"
-          : bucket === "delete_wipe"
-            ? "Delete/Wipe"
-            : bucket === "backup_import"
-              ? "Backup/Import"
-              : "Other";
-      const actionChipClass =
-        bucket === "create_update"
-          ? "info"
-          : bucket === "delete_wipe"
-            ? "critical"
-            : bucket === "backup_import"
-              ? "ok"
-              : "warning";
-      const page = String(entry.page_title || "-");
-      const branch = String(entry.branch_scope || "-");
-      const user = [entry.username, String(entry.role || "").toUpperCase()]
-        .map((value) => String(value || "").trim())
-        .filter(Boolean)
-        .join(" | ");
-      const summary = String(entry.action || "-");
-      const detailsText = [
-        entry.details ? `Details: ${entry.details}` : "",
-        `Category: ${String(entry.category || "-")}`,
-        `Date Scope: ${String(entry.date_scope || "-")}`
-      ]
-        .filter(Boolean)
-        .join("\n");
-      const searchable = [
-        createdLabel,
-        actionLabel,
-        page,
-        branch,
-        user,
-        summary,
-        entry.details || "",
-        entry.category || "",
-        entry.date_scope || ""
-      ]
-        .join(" ")
-        .toLowerCase();
-
-      return `
-        <tr data-fish-search="${escapeHtml(searchable)}">
-          <td>${escapeHtml(createdLabel)}</td>
-          <td><span class="chip ${escapeHtml(actionChipClass)}">${escapeHtml(actionLabel)}</span></td>
-          <td>${escapeHtml(page)}</td>
-          <td>${escapeHtml(branch)}</td>
-          <td>${escapeHtml(user || "-")}</td>
-          <td>${escapeHtml(summary)}</td>
-          <td>
-            <details>
-              <summary>View</summary>
-              <pre class="hint" style="white-space:pre-wrap;margin:6px 0 0;">${escapeHtml(
-                detailsText || "-"
-              )}</pre>
-            </details>
-          </td>
-        </tr>
-      `;
-    })
-    .join("");
-
-  return `
-    <section class="card wide">
-      <div class="card-header"><h3>Activity Logs</h3></div>
-      <p class="page-note">${escapeHtml(getBranchScopeLabel(state.branchId))} | ${escapeHtml(
-        state.date
-      )} | role=${escapeHtml(state.currentUser?.role || "-")}</p>
-    </section>
-
-    <section class="kpi-grid">
-      <article class="kpi-card"><p>Total Logs</p><h2>${entries.length}</h2></article>
-      <article class="kpi-card"><p>Create/Update</p><h2>${totals.createUpdate}</h2></article>
-      <article class="kpi-card"><p>Delete/Wipe</p><h2>${totals.deleteWipe}</h2></article>
-      <article class="kpi-card"><p>Backup/Import</p><h2>${totals.backupImport}</h2></article>
-      <article class="kpi-card"><p>Today</p><h2>${totals.today}</h2></article>
-    </section>
-
-    <section class="card wide">
-      <div class="card-header"><h3>Activity Logs</h3></div>
-      <div class="inline-actions">
-        <button
-          type="button"
-          class="btn btn-outline"
-          id="downloadActivityLogsBtn"
-          ${entries.length > 0 ? "" : "disabled"}
-        >Download Logs JSON</button>
-        <button
-          type="button"
-          class="btn btn-danger"
-          id="clearActivityLogsBtn"
-          ${entries.length > 0 ? "" : "disabled"}
-        >Clear Logs</button>
-      </div>
-      <div class="table-search" style="margin-top:10px;">
-        <input
-          id="activityLogsSearchInput"
-          class="table-input"
-          type="search"
-          placeholder="Quick find by action, summary, page, user, or branch"
-          value="${escapeHtml(state.quickSearch.activityLogs)}"
-        />
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Time</th>
-              <th>Action</th>
-              <th>Page</th>
-              <th>Branch</th>
-              <th>User</th>
-              <th>Summary</th>
-              <th>Details</th>
-            </tr>
-          </thead>
-          <tbody id="activityLogsTableBody">
-            ${rows || '<tr><td colspan="7" class="empty-state">No activity captured yet.</td></tr>'}
-            ${
-              rows
-                ? '<tr id="activityLogsSearchEmptyRow" class="hidden"><td colspan="7" class="empty-state">No logs match your search.</td></tr>'
-                : ""
-            }
-          </tbody>
-        </table>
-      </div>
-      <p class="page-note">Captures save/add/delete/backup actions. Keeps latest ${MAX_ACTIVITY_LOGS} logs.</p>
-    </section>
-  `;
-}
-
 function renderDeleteDataPage() {
   if (!hasPermission(state.currentUser, "delete_center")) {
     return `
@@ -6762,10 +6467,6 @@ function renderActivePage() {
       return renderActivityLogsPage();
     case "monthly_calculations":
       return renderMonthlyCalculationsPage();
-    case "error_logs":
-      return renderErrorLogsPage();
-    case "activity_logs":
-      return renderActivityLogsPage();
     case "about":
       return renderAboutPage();
     case "settings":
@@ -7385,7 +7086,7 @@ function registerServiceWorker() {
     return;
   }
   navigator.serviceWorker
-    .register("./service-worker.js?v=20260308-11")
+    .register("./service-worker.js?v=20260308-12")
     .then((registration) => {
       registration.addEventListener("updatefound", () => {
         const installingWorker = registration.installing;
@@ -9286,68 +8987,6 @@ function bindTransferSuggestionsEvents() {
   );
 }
 
-function bindErrorLogsEvents() {
-  bindFishQuickSearch(
-    "errorLogsSearchInput",
-    "errorLogsTableBody",
-    "errorLogsSearchEmptyRow",
-    "errorLogs"
-  );
-
-  const downloadBtn = document.getElementById("downloadErrorLogsBtn");
-  const clearBtn = document.getElementById("clearErrorLogsBtn");
-
-  downloadBtn?.addEventListener("click", () => {
-    const payload = JSON.stringify(DATA.app_error_logs || [], null, 2);
-    const filename = `fishops-error-logs-${isoDateToday()}.json`;
-    triggerBackupDownload(payload, filename);
-  });
-
-  clearBtn?.addEventListener("click", () => {
-    if (state.currentUser?.role !== "master") {
-      return;
-    }
-    const ok = window.confirm("Clear all captured error logs?");
-    if (!ok) {
-      return;
-    }
-    DATA.app_error_logs = [];
-    saveStoreWithActivity("ERROR_LOGS_CLEAR", "Cleared all error logs.");
-    renderApp();
-  });
-}
-
-function bindActivityLogsEvents() {
-  bindFishQuickSearch(
-    "activityLogsSearchInput",
-    "activityLogsTableBody",
-    "activityLogsSearchEmptyRow",
-    "activityLogs"
-  );
-
-  const downloadBtn = document.getElementById("downloadActivityLogsBtn");
-  const clearBtn = document.getElementById("clearActivityLogsBtn");
-
-  downloadBtn?.addEventListener("click", () => {
-    const payload = JSON.stringify(DATA.activity_logs || [], null, 2);
-    const filename = `fishops-activity-logs-${isoDateToday()}.json`;
-    triggerBackupDownload(payload, filename);
-  });
-
-  clearBtn?.addEventListener("click", () => {
-    if (state.currentUser?.role !== "master") {
-      return;
-    }
-    const ok = window.confirm("Clear all activity logs?");
-    if (!ok) {
-      return;
-    }
-    DATA.activity_logs = [];
-    saveStoreWithActivity("ACTIVITY_LOGS_CLEAR", "Cleared all activity logs.");
-    renderApp();
-  });
-}
-
 function bindMonthlyCalculationsEvents() {
   const monthInput = document.getElementById("monthlyCalcMonthInput");
   monthInput?.addEventListener("change", () => {
@@ -9834,12 +9473,6 @@ function bindActivePageEvents() {
     case "transfer_suggestions":
       bindTransferSuggestionsEvents();
       break;
-    case "error_logs":
-      bindErrorLogsEvents();
-      break;
-    case "activity_logs":
-      bindActivityLogsEvents();
-      break;
     case "monthly_calculations":
       bindMonthlyCalculationsEvents();
       break;
@@ -10215,4 +9848,5 @@ init().catch((error) => {
   captureAppError(error, { level: "ERROR", details: "init() failed" });
   alert("Application initialization failed. Check Error Logs tab after reload.");
 });
+
 
