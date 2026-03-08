@@ -4561,7 +4561,7 @@ function renderBillingPage() {
     state.billingDraftItems.reduce((sum, item) => sum + numberOr(item.line_total, 0), 0)
   );
   const amountPaid = Math.max(0, round2(numberOr(state.billingDraftAmountPaid, 0)));
-  const balanceDue = round2(Math.max(0, draftTotal - amountPaid));
+  const balanceDue = round2(Math.abs(draftTotal - amountPaid));
   const itemCount = state.billingDraftItems.length;
 
   const draftLines = state.billingDraftItems
@@ -8396,7 +8396,7 @@ function bindBillingEvents() {
       state.billingDraftItems.reduce((sum, item) => sum + numberOr(item.line_total, 0), 0)
     );
     const paid = Math.max(0, round2(numberOr(state.billingDraftAmountPaid, 0)));
-    const balance = round2(Math.max(0, total - paid));
+    const balance = round2(Math.abs(total - paid));
     const totalLabel = document.getElementById("billingDraftTotalText");
     const paidLabel = document.getElementById("billingDraftPaidText");
     const balanceLabel = document.getElementById("billingDraftBalanceText");
@@ -8607,6 +8607,7 @@ function bindBillingEvents() {
       alert(`Bill no "${invoiceNo}" already exists.`);
       return;
     }
+    const paidAmount = Math.max(0, round2(numberOr(state.billingDraftAmountPaid, amountPaidInput?.value)));
 
     const bill = {
       id: makeId("ORD"),
@@ -8618,7 +8619,7 @@ function bindBillingEvents() {
       currency: state.settings.currency || "LKR",
       payment_method: normalizePaymentMethod(state.billingDraftPaymentMethod || paymentMethodInput?.value),
       payment_terms: normalizePaymentTerms(state.billingDraftPaymentTerms || paymentTermsInput?.value),
-      amount_paid: Math.max(0, round2(numberOr(state.billingDraftAmountPaid, amountPaidInput?.value))),
+      amount_paid: paidAmount,
       notes: String(state.billingDraftNotes || notesInput?.value || "").trim(),
       shop_requests: String(state.billingDraftRequests || requestsInput?.value || "").trim(),
       items: state.billingDraftItems.map((item) => ({
@@ -8645,6 +8646,9 @@ function bindBillingEvents() {
       return;
     }
     bill.stock_applied = true;
+    const totalAmount = round2(numberOr(bill.total_amount, 0));
+    const balanceAmount = round2(Math.abs(totalAmount - paidAmount));
+    const isBalanceReturn = paidAmount > totalAmount;
     DATA.customer_bills.push(bill);
     state.billingDraftBranchId = branchId;
     state.billingDraftItems = [];
@@ -8664,7 +8668,13 @@ function bindBillingEvents() {
       }
     });
     renderApp();
-    alert(`Bill created. Bill no: ${invoiceNo}. Use Download button in Today Bills.`);
+    const balanceMessage =
+      balanceAmount > 0
+        ? isBalanceReturn
+          ? `Balance to return: ${money(balanceAmount)}.`
+          : `Balance due: ${money(balanceAmount)}.`
+        : "No balance pending.";
+    alert(`Bill created. Bill no: ${invoiceNo}. ${balanceMessage} Use Download button in Today Bills.`);
   });
 
   document.querySelectorAll(".billing-recent-invoice-btn").forEach((button) => {
