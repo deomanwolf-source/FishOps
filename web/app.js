@@ -4615,6 +4615,9 @@ function renderBillingPage() {
       const status = String(row.payment_status || "UNPAID").toUpperCase();
       const statusClass = status === "PAID" ? "ok" : status === "PARTIAL" ? "warning" : "critical";
       const isDetailsOpen = state.billingRecentDetailsId === String(row.id || "");
+      const rowTotalAmount = round2(numberOr(row.total_amount, 0));
+      const rowPaidAmount = Math.max(0, round2(numberOr(row.amount_paid, 0)));
+      const rowBalanceAmount = round2(Math.abs(rowTotalAmount - rowPaidAmount));
       const itemLines = (Array.isArray(row.items) ? row.items : [])
         .map(
           (item) =>
@@ -4653,8 +4656,8 @@ function renderBillingPage() {
                   <div class="billing-pos-recent-meta">
                     <p><strong>Payment:</strong> ${escapeHtml(paymentMethodLabel(row.payment_method))}</p>
                     <p><strong>Terms:</strong> ${escapeHtml(paymentTermsLabel(row.payment_terms))}</p>
-                    <p><strong>Paid:</strong> ${money(numberOr(row.amount_paid, 0))}</p>
-                    <p><strong>Balance:</strong> ${money(numberOr(row.balance_due, 0))}</p>
+                    <p><strong>Paid:</strong> ${money(rowPaidAmount)}</p>
+                    <p><strong>Balance:</strong> ${money(rowBalanceAmount)}</p>
                   </div>
                   <p class="billing-pos-recent-note"><strong>Notes:</strong> ${escapeHtml(row.notes || "-")}</p>
                   <p class="billing-pos-recent-note"><strong>Requests:</strong> ${escapeHtml(row.shop_requests || "-")}</p>
