@@ -581,6 +581,44 @@ th {
   font-size: 12px;
 }
 
+.fish-photo-cell {
+  display: grid;
+  gap: 6px;
+  min-width: 120px;
+}
+
+.fish-photo-thumb {
+  width: 52px;
+  height: 52px;
+  border-radius: 10px;
+  border: 1px solid #cbd5e1;
+  display: grid;
+  place-items: center;
+  font-size: 15px;
+  font-weight: 700;
+  color: #475569;
+  background: radial-gradient(circle at 30% 20%, #f8fafc 0%, #e2e8f0 70%, #cbd5e1 100%);
+}
+
+img.fish-photo-thumb.has-photo {
+  display: block;
+  object-fit: cover;
+  background: #fff;
+}
+
+.fish-photo-input {
+  padding: 4px;
+  font-size: 12px;
+}
+
+.fish-photo-remove {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
 .section-gap {
   margin-bottom: 12px;
 }
@@ -713,6 +751,18 @@ th {
   font-size: 27px;
   font-weight: 800;
   color: #475569;
+}
+
+.billing-pos-product-avatar.has-photo {
+  overflow: hidden;
+  padding: 0;
+  background: #fff;
+}
+
+.billing-pos-product-avatar.has-photo img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .billing-pos-product-name {

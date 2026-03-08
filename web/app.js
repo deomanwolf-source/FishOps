@@ -710,6 +710,9 @@ function loadStore(overrideSnapshot = null) {
     if (!fish.id) {
       fish.id = makeId("FISH");
     }
+    if (typeof fish.photo !== "string") {
+      fish.photo = "";
+    }
   }
 
   for (const row of DATA.branch_fish_settings) {
@@ -3568,6 +3571,10 @@ function renderFishProfilesPage() {
         fish,
         [fish.category, fish.unit, fish.status, fish.id].filter(Boolean).join(" ")
       );
+      const fishLabel = String(fish.name || fish.fish_code || fish.id);
+      const photoPreview = String(fish.photo || "").trim()
+        ? `<img class="fish-photo-thumb has-photo" src="${escapeHtml(fish.photo)}" alt="${escapeHtml(fishLabel)}" />`
+        : `<span class="fish-photo-thumb">${escapeHtml(getInitials(fishLabel))}</span>`;
       return `
       <tr data-fish-search="${escapeHtml(searchable)}">
         <td>${escapeHtml(fish.fish_code)}</td>
@@ -3576,6 +3583,17 @@ function renderFishProfilesPage() {
             ? `<input id="fish-name-${fish.id}" class="table-input" value="${escapeHtml(fish.name)}" />`
             : escapeHtml(fish.name)
         }</td>
+        <td>
+          <div class="fish-photo-cell">
+            ${photoPreview}
+            ${
+              canEdit
+                ? `<input id="fish-photo-${fish.id}" class="table-input fish-photo-input" type="file" accept="image/*" />
+                   <label class="fish-photo-remove"><input id="fish-photo-remove-${fish.id}" type="checkbox" /> Remove</label>`
+                : ""
+            }
+          </div>
+        </td>
         <td>${
           canEdit
             ? `<select id="fish-category-${fish.id}" class="table-select">
@@ -3629,6 +3647,7 @@ function renderFishProfilesPage() {
             <form id="fishCreateForm" class="form-grid compact">
               <input id="newFishCode" type="text" placeholder="Fish Code (optional, auto: F-0001)" />
               <input id="newFishName" type="text" placeholder="Fish Name" required />
+              <input id="newFishPhotoInput" type="file" accept="image/*" />
               <select id="newFishCategory">
                 <option value="Sea">Sea</option>
                 <option value="Lagoon">Lagoon</option>
@@ -3644,7 +3663,7 @@ function renderFishProfilesPage() {
               </select>
               <button class="btn btn-primary" type="submit">Add Fish</button>
             </form>
-            <p class="page-note">If fish code is empty, the system auto-generates the next F code.</p>
+            <p class="page-note">If fish code is empty, the system auto-generates the next F code. Photo is optional.</p>
           </section>`
         : ""
     }
@@ -3666,6 +3685,7 @@ function renderFishProfilesPage() {
             <tr>
               <th>Code</th>
               <th>Name</th>
+              <th>Photo</th>
               <th>Category</th>
               <th>Unit</th>
               <th>Status</th>
@@ -3673,10 +3693,10 @@ function renderFishProfilesPage() {
             </tr>
           </thead>
           <tbody id="fishProfilesTableBody">
-            ${rows || '<tr><td colspan="6" class="empty-state">No fish profiles found.</td></tr>'}
+            ${rows || '<tr><td colspan="7" class="empty-state">No fish profiles found.</td></tr>'}
             ${
               rows
-                ? '<tr id="fishProfilesSearchEmptyRow" class="hidden"><td colspan="6" class="empty-state">No fish match your search.</td></tr>'
+                ? '<tr id="fishProfilesSearchEmptyRow" class="hidden"><td colspan="7" class="empty-state">No fish match your search.</td></tr>'
                 : ""
             }
           </tbody>
@@ -4694,6 +4714,12 @@ function renderBillingPage() {
       const hasStock = availableKg > 0;
       const title = String(fish.name || fish.fish_code || fish.id);
       const label = fishDisplayLabel(fish, fish.id);
+      const hasPhoto = Boolean(String(fish.photo || "").trim());
+      const avatar = hasPhoto
+        ? `<span class="billing-pos-product-avatar has-photo"><img src="${escapeHtml(
+            String(fish.photo || "")
+          )}" alt="${escapeHtml(title)}" loading="lazy" /></span>`
+        : `<span class="billing-pos-product-avatar">${escapeHtml(getInitials(title))}</span>`;
       return `
         <button
           type="button"
@@ -4705,7 +4731,7 @@ function renderBillingPage() {
           ${hasStock ? "" : "disabled"}
         >
           <span class="billing-pos-product-price">${money(defaultPrice)}</span>
-          <span class="billing-pos-product-avatar">${escapeHtml(getInitials(title))}</span>
+          ${avatar}
           <span class="billing-pos-product-name">${escapeHtml(title)}</span>
           <span class="billing-pos-product-meta">${escapeHtml(String(fish.category || "General"))}</span>
           <span class="billing-pos-product-stock ${hasStock ? "in-stock" : "out-stock"}">${
@@ -7748,7 +7774,7 @@ function bindFishPageEvents() {
   }
 
   const createForm = document.getElementById("fishCreateForm");
-  createForm?.addEventListener("submit", (event) => {
+  createForm?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const fishCodeInput = document.getElementById("newFishCode")?.value.trim().toUpperCase();
     const fishCode = fishCodeInput || nextFishCode();
@@ -7756,6 +7782,7 @@ function bindFishPageEvents() {
     const category = document.getElementById("newFishCategory")?.value || "Sea";
     const unit = document.getElementById("newFishUnit")?.value || "kg";
     const status = document.getElementById("newFishStatus")?.value || "active";
+    const photoFile = document.getElementById("newFishPhotoInput")?.files?.[0] || null;
 
     if (!name) {
       alert("Fish name is required.");
@@ -7770,22 +7797,41 @@ function bindFishPageEvents() {
       return;
     }
 
+    let photo = "";
+    if (photoFile) {
+      if (!String(photoFile.type || "").startsWith("image/")) {
+        alert("Please select an image file for fish photo.");
+        return;
+      }
+      try {
+        photo = await optimizeImageDataUrl(photoFile, {
+          maxEdge: 320,
+          outputType: "image/webp",
+          quality: 0.8
+        });
+      } catch {
+        alert("Unable to process fish photo.");
+        return;
+      }
+    }
+
     DATA.fish_profiles.push({
       id: makeId("FISH"),
       fish_code: fishCode,
       name,
       category,
       unit,
-      status
+      status,
+      photo
     });
     saveStoreWithActivity("FISH_CREATE", `Added fish "${name}" (${fishCode}).`, {
-      details: { fish_code: fishCode, category, unit, status }
+      details: { fish_code: fishCode, category, unit, status, has_photo: Boolean(photo) }
     });
     renderApp();
   });
 
   document.querySelectorAll(".fish-save-btn").forEach((button) => {
-    button.addEventListener("click", () => {
+    button.addEventListener("click", async () => {
       const fishId = button.getAttribute("data-fish-id");
       if (!fishId) {
         return;
@@ -7798,18 +7844,39 @@ function bindFishPageEvents() {
       const category = document.getElementById(`fish-category-${fishId}`)?.value || fish.category;
       const unit = document.getElementById(`fish-unit-${fishId}`)?.value || fish.unit;
       const status = document.getElementById(`fish-status-${fishId}`)?.value || fish.status;
+      const photoFile = document.getElementById(`fish-photo-${fishId}`)?.files?.[0] || null;
+      const removePhoto = Boolean(document.getElementById(`fish-photo-remove-${fishId}`)?.checked);
 
       if (!name) {
         alert("Fish name is required.");
         return;
       }
 
+      let photo = removePhoto ? "" : String(fish.photo || "");
+      if (photoFile) {
+        if (!String(photoFile.type || "").startsWith("image/")) {
+          alert("Please select an image file for fish photo.");
+          return;
+        }
+        try {
+          photo = await optimizeImageDataUrl(photoFile, {
+            maxEdge: 320,
+            outputType: "image/webp",
+            quality: 0.8
+          });
+        } catch {
+          alert("Unable to process fish photo.");
+          return;
+        }
+      }
+
       fish.name = name;
       fish.category = category;
       fish.unit = unit;
       fish.status = status;
+      fish.photo = photo;
       saveStoreWithActivity("FISH_UPDATE", `Updated fish "${name}" (${fish.fish_code}).`, {
-        details: { fish_id: fish.id, category, unit, status }
+        details: { fish_id: fish.id, category, unit, status, has_photo: Boolean(photo) }
       });
       renderApp();
     });
