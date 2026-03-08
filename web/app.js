@@ -4742,14 +4742,28 @@ function renderBillingPage() {
               <option value="15_days" ${normalizePaymentTerms(state.billingDraftPaymentTerms) === "15_days" ? "selected" : ""}>15 days</option>
               <option value="month_end" ${normalizePaymentTerms(state.billingDraftPaymentTerms) === "month_end" ? "selected" : ""}>Month end</option>
             </select>
-            <input
-              id="billingAmountPaidInput"
-              type="number"
-              min="0"
-              step="0.01"
-              placeholder="Amount paid"
-              value="${numberOr(state.billingDraftAmountPaid, 0)}"
-            />
+          </div>
+          <div class="billing-pos-payment-fields">
+            <label class="billing-pos-payment-field" for="billingAmountPaidInput">
+              <span>Customer paid amount</span>
+              <input
+                id="billingAmountPaidInput"
+                type="number"
+                min="0"
+                step="0.01"
+                placeholder="Amount paid"
+                value="${numberOr(state.billingDraftAmountPaid, 0)}"
+              />
+            </label>
+            <label class="billing-pos-payment-field" for="billingBalancePreviewInput">
+              <span>Balance amount</span>
+              <input
+                id="billingBalancePreviewInput"
+                type="text"
+                value="${money(balanceDue)}"
+                readonly
+              />
+            </label>
           </div>
           <textarea id="billingNotesInput" rows="2" placeholder="Internal notes">${escapeHtml(
             state.billingDraftNotes
@@ -4768,7 +4782,7 @@ function renderBillingPage() {
           <div class="billing-pos-cart-summary">
             <p><span>Items</span><strong>${itemCount}</strong></p>
             <p><span>Total</span><strong id="billingDraftTotalText">${money(draftTotal)}</strong></p>
-            <p><span>Paid</span><strong>${money(amountPaid)}</strong></p>
+            <p><span>Paid</span><strong id="billingDraftPaidText">${money(amountPaid)}</strong></p>
             <p><span>Balance</span><strong id="billingDraftBalanceText">${money(balanceDue)}</strong></p>
           </div>
 
@@ -8371,6 +8385,7 @@ function bindBillingEvents() {
   const paymentMethodInput = document.getElementById("billingPaymentMethodInput");
   const paymentTermsInput = document.getElementById("billingPaymentTermsInput");
   const amountPaidInput = document.getElementById("billingAmountPaidInput");
+  const balancePreviewInput = document.getElementById("billingBalancePreviewInput");
   const notesInput = document.getElementById("billingNotesInput");
   const requestsInput = document.getElementById("billingRequestsInput");
   const fishSearchInput = document.getElementById("billingFishSearchInput");
@@ -8383,12 +8398,19 @@ function bindBillingEvents() {
     const paid = Math.max(0, round2(numberOr(state.billingDraftAmountPaid, 0)));
     const balance = round2(Math.max(0, total - paid));
     const totalLabel = document.getElementById("billingDraftTotalText");
+    const paidLabel = document.getElementById("billingDraftPaidText");
     const balanceLabel = document.getElementById("billingDraftBalanceText");
     if (totalLabel) {
       totalLabel.textContent = money(total);
     }
+    if (paidLabel) {
+      paidLabel.textContent = money(paid);
+    }
     if (balanceLabel) {
       balanceLabel.textContent = money(balance);
+    }
+    if (balancePreviewInput instanceof HTMLInputElement) {
+      balancePreviewInput.value = money(balance);
     }
   };
 
@@ -8431,6 +8453,7 @@ function bindBillingEvents() {
     state.billingDraftAmountPaid = Math.max(0, round2(numberOr(amountPaidInput.value, 0)));
     updateDraftBalancePreview();
   });
+  updateDraftBalancePreview();
 
   document.querySelectorAll(".billing-pos-product-btn").forEach((button) => {
     button.addEventListener("click", () => {

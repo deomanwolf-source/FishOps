@@ -780,7 +780,8 @@ th {
 .billing-pos-cart-form > input,
 .billing-pos-cart-form > textarea,
 .billing-pos-cart-fields > select,
-.billing-pos-cart-fields > input {
+.billing-pos-cart-fields > input,
+.billing-pos-payment-field > input {
   border: 1px solid #cbd5e1;
   border-radius: 9px;
   padding: 9px 10px;
@@ -796,7 +797,29 @@ th {
 .billing-pos-cart-fields {
   display: grid;
   gap: 8px;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.billing-pos-payment-fields {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.billing-pos-payment-field {
+  display: grid;
+  gap: 4px;
+}
+
+.billing-pos-payment-field > span {
+  font-size: 12px;
+  color: #334155;
+  font-weight: 600;
+}
+
+.billing-pos-payment-field > input[readonly] {
+  background: #f8fafc;
+  color: #0f172a;
 }
 
 .billing-pos-cart-lines {
@@ -1239,6 +1262,10 @@ th {
   }
 
   .billing-pos-cart-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .billing-pos-payment-fields {
     grid-template-columns: 1fr;
   }
 
