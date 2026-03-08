@@ -126,6 +126,7 @@ const PAGES = [
   { id: "y_daily_prices", title: "Y- Daily Price", permission: "set_daily_prices" },
   { id: "hold_stock", title: "Hold Stock", permission: "manage_hold_stock" },
   { id: "shop_orders", title: "Shop Orders", permission: "manage_shop_orders" },
+  { id: "shop_status", title: "Shop Status", permission: "manage_shop_orders" },
   { id: "billing", title: "Billing", permission: "manage_shop_orders" },
   { id: "billing_progress", title: "Billing Progress", permission: "view_billing_progress" },
   { id: "remaining_stock_holds", title: "Current Stocks & Holds", permission: "manage_hold_stock" },
@@ -171,6 +172,7 @@ const state = {
     activityLogs: "",
     holdStock: "",
     shopOrders: "",
+    shopStatus: "",
     billing: "",
     remainingStocks: "",
     remainingHolds: "",
@@ -816,6 +818,10 @@ function loadStore(overrideSnapshot = null) {
     if (typeof row.shop_name !== "string") {
       row.shop_name = "";
     }
+    if (typeof row.shop_status !== "string") {
+      row.shop_status = "open";
+    }
+    row.shop_status = normalizeShopStatus(row.shop_status);
     if (typeof row.branch_id !== "string") {
       row.branch_id = "";
     }
@@ -893,6 +899,10 @@ function loadStore(overrideSnapshot = null) {
     if (typeof row.shop_name !== "string") {
       row.shop_name = "";
     }
+    if (typeof row.shop_status !== "string") {
+      row.shop_status = "open";
+    }
+    row.shop_status = normalizeShopStatus(row.shop_status);
     if (typeof row.branch_id !== "string") {
       row.branch_id = "";
     }
@@ -2340,6 +2350,20 @@ function normalizePaymentTerms(value) {
   return "immediate";
 }
 
+function normalizeShopStatus(value) {
+  const status = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (status === "closed") {
+    return "closed";
+  }
+  return "open";
+}
+
+function shopStatusLabel(value) {
+  return normalizeShopStatus(value) === "closed" ? "CLOSED" : "OPEN";
+}
+
 function resolvePaymentStatus(totalAmount, amountPaid) {
   const total = Math.max(0, round2(numberOr(totalAmount, 0)));
   const paid = Math.max(0, round2(numberOr(amountPaid, 0)));
@@ -2576,6 +2600,7 @@ function buildShopOrderInvoiceText(order) {
     `Date: ${order.date || "-"}`,
     `Branch: ${branch?.name || order.branch_id || "-"}`,
     `Shop: ${order.shop_name || "-"}`,
+    `Shop Status: ${shopStatusLabel(order.shop_status)}`,
     `Payment Method: ${paymentMethodLabel(order.payment_method)}`,
     `Payment Terms: ${paymentTermsLabel(order.payment_terms)}`,
     ""
@@ -4270,9 +4295,11 @@ function renderShopOrdersPage() {
     .map((order) => {
       const branch = findBranchById(order.branch_id);
       const status = String(order.payment_status || "UNPAID").toUpperCase();
+      const shopStatus = normalizeShopStatus(order.shop_status);
       const statusClass = status === "PAID" ? "ok" : status === "PARTIAL" ? "warning" : "critical";
       const searchable = [
         String(order.shop_name || "").toLowerCase(),
+        shopStatus,
         String(order.invoice_no || "").toLowerCase(),
         String(branch?.name || order.branch_id || "").toLowerCase(),
         String(order.notes || "").toLowerCase(),
@@ -4285,6 +4312,12 @@ function renderShopOrdersPage() {
           <td>${escapeHtml(order.invoice_no || order.id)}</td>
           <td>${escapeHtml(branch?.name || order.branch_id || "-")}</td>
           <td>${escapeHtml(order.shop_name || "-")}</td>
+          <td>
+            <select id="shop-order-status-${order.id}" class="table-select">
+              <option value="open" ${shopStatus === "open" ? "selected" : ""}>Open</option>
+              <option value="closed" ${shopStatus === "closed" ? "selected" : ""}>Closed</option>
+            </select>
+          </td>
           <td>${escapeHtml(formatShopOrderItemLines(order))}</td>
           <td>${money(numberOr(order.total_amount, 0))}</td>
           <td>
@@ -4368,6 +4401,10 @@ function renderShopOrdersPage() {
           ${branchOptions}
         </select>
         <input id="shopOrderShopNameInput" type="text" placeholder="Shop / Hotel / Restaurant name" required />
+        <select id="shopOrderStatusInput">
+          <option value="open" selected>Open</option>
+          <option value="closed">Closed</option>
+        </select>
         <input id="shopOrderInvoiceInput" type="text" placeholder="Invoice no (optional: auto)" />
         <select id="shopOrderPaymentMethodInput">
           <option value="cash">Cash</option>
@@ -4426,7 +4463,7 @@ function renderShopOrdersPage() {
           id="shopOrdersSearchInput"
           class="table-input"
           type="search"
-          placeholder="Quick find by shop, invoice, fish, notes, or branch"
+          placeholder="Quick find by shop, status, invoice, fish, notes, or branch"
           value="${escapeHtml(state.quickSearch.shopOrders)}"
         />
       </div>
@@ -4437,6 +4474,7 @@ function renderShopOrdersPage() {
               <th>Invoice</th>
               <th>Branch</th>
               <th>Shop</th>
+              <th>Shop Status</th>
               <th>Fish Lines</th>
               <th>Total</th>
               <th>Paid</th>
@@ -4450,11 +4488,135 @@ function renderShopOrdersPage() {
           <tbody id="shopOrdersTableBody">
             ${
               rows ||
-              '<tr><td colspan="11" class="empty-state">No shop orders for selected date and scope.</td></tr>'
+              '<tr><td colspan="12" class="empty-state">No shop orders for selected date and scope.</td></tr>'
             }
             ${
               rows
-                ? '<tr id="shopOrdersSearchEmptyRow" class="hidden"><td colspan="11" class="empty-state">No shop orders match your search.</td></tr>'
+                ? '<tr id="shopOrdersSearchEmptyRow" class="hidden"><td colspan="12" class="empty-state">No shop orders match your search.</td></tr>'
+                : ""
+            }
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function renderShopStatusPage() {
+  const accessibleBranches = getAccessibleBranches(state.currentUser);
+  if (accessibleBranches.length === 0) {
+    return `
+      <section class="card wide">
+        <div class="card-header"><h3>Shop Status</h3></div>
+        <p class="empty-state">No branches available for this user.</p>
+      </section>
+    `;
+  }
+
+  const scopeBranchIds = shopOrderScopeBranchIds();
+  const scopeBranchSet = new Set(scopeBranchIds);
+  const orders = DATA.shop_orders
+    .filter((row) => {
+      if (!isShopOrderRow(row)) {
+        return false;
+      }
+      if (!scopeBranchSet.has(row.branch_id)) {
+        return false;
+      }
+      return String(row.date || "") === state.date;
+    })
+    .sort((a, b) =>
+      String(b.updated_at || b.created_at || "").localeCompare(String(a.updated_at || a.created_at || ""))
+    );
+
+  const totals = orders.reduce(
+    (acc, order) => {
+      const status = normalizeShopStatus(order.shop_status);
+      if (status === "closed") {
+        acc.closed += 1;
+      } else {
+        acc.open += 1;
+      }
+      return acc;
+    },
+    { open: 0, closed: 0 }
+  );
+
+  const rows = orders
+    .map((order) => {
+      const branch = findBranchById(order.branch_id);
+      const status = normalizeShopStatus(order.shop_status);
+      const updatedAt = String(order.updated_at || order.created_at || "")
+        .replace("T", " ")
+        .replace("Z", "");
+      const searchable = [
+        String(order.shop_name || "").toLowerCase(),
+        String(order.invoice_no || "").toLowerCase(),
+        String(branch?.name || order.branch_id || "").toLowerCase(),
+        status
+      ].join(" ");
+
+      return `
+        <tr data-fish-search="${escapeHtml(searchable)}">
+          <td>${escapeHtml(order.invoice_no || order.id)}</td>
+          <td>${escapeHtml(branch?.name || order.branch_id || "-")}</td>
+          <td>${escapeHtml(order.shop_name || "-")}</td>
+          <td>
+            <select id="shop-status-select-${order.id}" class="table-select">
+              <option value="open" ${status === "open" ? "selected" : ""}>Open</option>
+              <option value="closed" ${status === "closed" ? "selected" : ""}>Closed</option>
+            </select>
+          </td>
+          <td>${escapeHtml(updatedAt || "-")}</td>
+          <td>
+            <button type="button" class="btn btn-primary shop-status-save-btn" data-order-id="${order.id}">
+              Save
+            </button>
+          </td>
+        </tr>
+      `;
+    })
+    .join("");
+
+  return `
+    <section class="kpi-grid">
+      <article class="kpi-card"><p>Total Shops</p><h2>${orders.length}</h2></article>
+      <article class="kpi-card"><p>Open</p><h2>${totals.open}</h2></article>
+      <article class="kpi-card"><p>Closed</p><h2>${totals.closed}</h2></article>
+    </section>
+
+    <section class="card wide">
+      <div class="card-header"><h3>Shop Status (${escapeHtml(state.date)})</h3></div>
+      <p class="page-note">Update open/closed status for each shop order.</p>
+      <div class="table-search">
+        <input
+          id="shopStatusSearchInput"
+          class="table-input"
+          type="search"
+          placeholder="Quick find by shop, status, invoice, or branch"
+          value="${escapeHtml(state.quickSearch.shopStatus)}"
+        />
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Invoice</th>
+              <th>Branch</th>
+              <th>Shop</th>
+              <th>Status</th>
+              <th>Updated</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="shopStatusTableBody">
+            ${
+              rows ||
+              '<tr><td colspan="6" class="empty-state">No shop orders found for selected date and scope.</td></tr>'
+            }
+            ${
+              rows
+                ? '<tr id="shopStatusSearchEmptyRow" class="hidden"><td colspan="6" class="empty-state">No shops match your search.</td></tr>'
                 : ""
             }
           </tbody>
@@ -6474,6 +6636,8 @@ function renderActivePage() {
       return renderHoldStockPage();
     case "shop_orders":
       return renderShopOrdersPage();
+    case "shop_status":
+      return renderShopStatusPage();
     case "billing":
       return renderBillingPage();
     case "billing_progress":
@@ -8130,6 +8294,7 @@ function bindShopOrdersEvents() {
   const createForm = document.getElementById("shopOrderCreateForm");
   const branchInput = document.getElementById("shopOrderBranchInput");
   const shopNameInput = document.getElementById("shopOrderShopNameInput");
+  const shopStatusInput = document.getElementById("shopOrderStatusInput");
   const invoiceInput = document.getElementById("shopOrderInvoiceInput");
   const paymentMethodInput = document.getElementById("shopOrderPaymentMethodInput");
   const paymentTermsInput = document.getElementById("shopOrderPaymentTermsInput");
@@ -8239,6 +8404,7 @@ function bindShopOrdersEvents() {
       order_channel: ORDER_CHANNEL_SHOP,
       branch_id: branchId,
       shop_name: shopName,
+      shop_status: normalizeShopStatus(shopStatusInput?.value),
       invoice_no: invoiceNo,
       currency: state.settings.currency || "LKR",
       payment_method: normalizePaymentMethod(paymentMethodInput?.value),
@@ -8271,6 +8437,7 @@ function bindShopOrdersEvents() {
         order_id: order.id,
         invoice_no: invoiceNo,
         branch_id: branchId,
+        shop_status: order.shop_status,
         item_count: order.items.length,
         total_amount: order.total_amount
       }
@@ -8300,6 +8467,9 @@ function bindShopOrdersEvents() {
       order.payment_terms = normalizePaymentTerms(
         document.getElementById(`shop-order-terms-${order.id}`)?.value
       );
+      order.shop_status = normalizeShopStatus(
+        document.getElementById(`shop-order-status-${order.id}`)?.value || order.shop_status
+      );
       order.notes = String(document.getElementById(`shop-order-notes-${order.id}`)?.value || "").trim();
       order.shop_requests = String(
         document.getElementById(`shop-order-requests-${order.id}`)?.value || ""
@@ -8310,6 +8480,7 @@ function bindShopOrdersEvents() {
           order_id: order.id,
           invoice_no: order.invoice_no,
           amount_paid: order.amount_paid,
+          shop_status: order.shop_status,
           payment_status: order.payment_status
         }
       });
@@ -8378,6 +8549,61 @@ function bindShopOrdersEvents() {
           branch_id: order.branch_id
         }
       });
+      renderApp();
+    });
+  });
+}
+
+function bindShopStatusEvents() {
+  bindFishQuickSearch(
+    "shopStatusSearchInput",
+    "shopStatusTableBody",
+    "shopStatusSearchEmptyRow",
+    "shopStatus"
+  );
+
+  if (isWriteRestricted()) {
+    return;
+  }
+
+  document.querySelectorAll(".shop-status-save-btn").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (!ensureWriteAllowed()) {
+        return;
+      }
+      const orderId = String(button.getAttribute("data-order-id") || "");
+      if (!orderId) {
+        return;
+      }
+      const order = DATA.shop_orders.find((row) => row.id === orderId);
+      if (!order || !isShopOrderRow(order)) {
+        return;
+      }
+
+      const nextStatus = normalizeShopStatus(
+        document.getElementById(`shop-status-select-${order.id}`)?.value || order.shop_status
+      );
+      const previousStatus = normalizeShopStatus(order.shop_status);
+      if (nextStatus === previousStatus) {
+        return;
+      }
+
+      order.shop_status = nextStatus;
+      order.updated_at = new Date().toISOString();
+      saveStoreWithActivity(
+        "SHOP_STATUS_UPDATE",
+        `Updated shop status for "${order.shop_name || order.invoice_no || order.id}" to ${shopStatusLabel(
+          nextStatus
+        )}.`,
+        {
+          details: {
+            order_id: order.id,
+            invoice_no: order.invoice_no,
+            branch_id: order.branch_id,
+            shop_status: nextStatus
+          }
+        }
+      );
       renderApp();
     });
   });
@@ -9491,6 +9717,9 @@ function bindActivePageEvents() {
     case "shop_orders":
       bindShopOrdersEvents();
       break;
+    case "shop_status":
+      bindShopStatusEvents();
+      break;
     case "billing":
       bindBillingEvents();
       break;
@@ -9612,6 +9841,7 @@ function startSession(user) {
   state.quickSearch.activityLogs = "";
   state.quickSearch.holdStock = "";
   state.quickSearch.shopOrders = "";
+  state.quickSearch.shopStatus = "";
   state.quickSearch.billing = "";
   state.quickSearch.remainingStocks = "";
   state.quickSearch.remainingHolds = "";
@@ -9665,6 +9895,7 @@ function endSession() {
   state.quickSearch.activityLogs = "";
   state.quickSearch.holdStock = "";
   state.quickSearch.shopOrders = "";
+  state.quickSearch.shopStatus = "";
   state.quickSearch.billing = "";
   state.quickSearch.remainingStocks = "";
   state.quickSearch.remainingHolds = "";
