@@ -12,6 +12,11 @@ const REMOTE_BACKUP_ENDPOINT = "/api/backup";
 const REMOTE_STORE_VERSION_ENDPOINT = "/api/store/version";
 const REMOTE_STORE_POLL_INTERVAL_MS = 15000;
 const LOCAL_STORE_PERSISTENCE_ENABLED = false;
+const MAX_APP_ERROR_LOGS = 800;
+const MAX_ACTIVITY_LOGS = 5000;
+const ORDER_CHANNEL_SHOP = "shop_order";
+const ORDER_CHANNEL_BILLING = "customer_bill";
+const BILLING_CATEGORY_ALL = "__ALL__";
 
 const DEFAULT_STORE = {
   data: {
@@ -31,7 +36,11 @@ const DEFAULT_STORE = {
     branch_fish_settings: [],
     daily_prices: [],
     daily_stock_entry: [],
-    hold_stock_entry: []
+    hold_stock_entry: [],
+    shop_orders: [],
+    customer_bills: [],
+    app_error_logs: [],
+    activity_logs: []
   },
   settings: {
     company_name: "RTX FishOps",
@@ -63,6 +72,8 @@ const ROLE_PERMISSIONS = {
     "set_branch_stock_levels",
     "set_daily_prices",
     "manage_hold_stock",
+    "manage_shop_orders",
+    "view_billing_progress",
     "enter_opening_stock",
     "enter_closing_stock",
     "enter_waste",
@@ -82,6 +93,7 @@ const ROLE_PERMISSIONS = {
     "set_branch_stock_levels",
     "set_daily_prices",
     "manage_hold_stock",
+    "manage_shop_orders",
     "enter_opening_stock",
     "enter_closing_stock",
     "enter_waste",
@@ -94,6 +106,7 @@ const ROLE_PERMISSIONS = {
     "backup_send_server",
     "view_fish_profiles",
     "manage_hold_stock",
+    "manage_shop_orders",
     "enter_opening_stock",
     "enter_closing_stock",
     "enter_waste",
@@ -109,11 +122,17 @@ const PAGES = [
   { id: "daily_prices", title: "Daily Prices", permission: "set_daily_prices" },
   { id: "y_daily_prices", title: "Y- Daily Price", permission: "set_daily_prices" },
   { id: "hold_stock", title: "Hold Stock", permission: "manage_hold_stock" },
+  { id: "shop_orders", title: "Shop Orders", permission: "manage_shop_orders" },
+  { id: "billing", title: "Billing", permission: "manage_shop_orders" },
+  { id: "billing_progress", title: "Billing Progress", permission: "view_billing_progress" },
   { id: "remaining_stock_holds", title: "Current Stocks & Holds", permission: "manage_hold_stock" },
   { id: "morning_opening_stock", title: "Morning Opening Stock", permission: "enter_opening_stock" },
   { id: "night_closing_stock", title: "Night Closing Stock", permission: "enter_closing_stock" },
   { id: "daily_summary", title: "Daily Summary", permission: "view_dashboard" },
   { id: "reports", title: "Reports", permission: "view_reports_today" },
+  { id: "transfer_suggestions", title: "Transfer Suggestions", permission: "view_all_branches" },
+  { id: "error_logs", title: "Error Logs", permission: "view_dashboard" },
+  { id: "activity_logs", title: "Activity Logs", permission: "view_dashboard" },
   { id: "monthly_calculations", title: "Monthly Calculations", permission: "view_reports_full" },
   { id: "about", title: "About", permission: "view_dashboard" },
   { id: "settings", title: "Settings", permission: "manage_branches" },
@@ -140,12 +159,31 @@ const state = {
     branchFishSettings: "",
     dailyPrices: "",
     yDailyPrices: "",
+    transferSuggestions: "",
+    errorLogs: "",
+    activityLogs: "",
     holdStock: "",
+    shopOrders: "",
+    billing: "",
     remainingStocks: "",
     remainingHolds: "",
     morningOpeningStock: "",
     nightClosingStock: ""
   },
+  shopOrderDraftBranchId: "",
+  shopOrderDraftItems: [],
+  billingDraftBranchId: "",
+  billingDraftItems: [],
+  billingDraftCategory: BILLING_CATEGORY_ALL,
+  billingDraftSearch: "",
+  billingDraftCustomerName: "",
+  billingDraftInvoiceNo: "",
+  billingDraftPaymentMethod: "cash",
+  billingDraftPaymentTerms: "immediate",
+  billingDraftAmountPaid: 0,
+  billingDraftNotes: "",
+  billingDraftRequests: "",
+  billingRecentDetailsId: "",
   settings: {},
   deferredInstallPrompt: null
 };
@@ -377,6 +415,10 @@ function loadStore(overrideSnapshot = null) {
   }
 
   const parsedData = parsed?.data ?? {};
+  const parsedShopOrders = Array.isArray(parsedData.shop_orders) ? parsedData.shop_orders : [];
+  const parsedCustomerBills = Array.isArray(parsedData.customer_bills)
+    ? parsedData.customer_bills
+    : parsedShopOrders.filter((row) => isBillingRow(row));
 
   DATA = {
     branches: Array.isArray(parsedData.branches) ? parsedData.branches : base.data.branches,
@@ -391,7 +433,15 @@ function loadStore(overrideSnapshot = null) {
       : base.data.daily_stock_entry,
     hold_stock_entry: Array.isArray(parsedData.hold_stock_entry)
       ? parsedData.hold_stock_entry
-      : base.data.hold_stock_entry
+      : base.data.hold_stock_entry,
+    shop_orders: parsedShopOrders.filter((row) => isShopOrderRow(row)),
+    customer_bills: parsedCustomerBills,
+    app_error_logs: Array.isArray(parsedData.app_error_logs)
+      ? parsedData.app_error_logs
+      : base.data.app_error_logs,
+    activity_logs: Array.isArray(parsedData.activity_logs)
+      ? parsedData.activity_logs
+      : base.data.activity_logs
   };
 
   state.settings = {
@@ -422,6 +472,10 @@ function loadStore(overrideSnapshot = null) {
       user.id = makeId("USR");
     }
     user.branch_id = normalizeUserBranchScope(user.role, user.branch_id);
+    user.hidden_page_ids = normalizeUserHiddenPageIds(user.role, user.hidden_page_ids, user.visible_page_ids);
+    if (Object.prototype.hasOwnProperty.call(user, "visible_page_ids")) {
+      delete user.visible_page_ids;
+    }
   }
 
   for (const fish of DATA.fish_profiles) {
@@ -520,6 +574,240 @@ function loadStore(overrideSnapshot = null) {
     }
     if (typeof row.moved_to_date !== "string") {
       row.moved_to_date = "";
+    }
+  }
+
+  for (const row of DATA.shop_orders) {
+    if (!row.id) {
+      row.id = makeId("ORD");
+    }
+    if (!isIsoDate(String(row.date || ""))) {
+      row.date = isoDateToday();
+    }
+    if (typeof row.invoice_no !== "string") {
+      row.invoice_no = "";
+    }
+    if (typeof row.shop_name !== "string") {
+      row.shop_name = "";
+    }
+    if (typeof row.branch_id !== "string") {
+      row.branch_id = "";
+    }
+    row.order_channel = normalizeOrderChannel(row.order_channel);
+    if (typeof row.currency !== "string") {
+      row.currency = state.settings.currency || "LKR";
+    }
+    if (typeof row.payment_method !== "string") {
+      row.payment_method = "cash";
+    }
+    if (typeof row.payment_terms !== "string") {
+      row.payment_terms = "immediate";
+    }
+    if (typeof row.notes !== "string") {
+      row.notes = "";
+    }
+    if (typeof row.shop_requests !== "string") {
+      row.shop_requests = "";
+    }
+    if (!Array.isArray(row.items)) {
+      row.items = [];
+    }
+    row.items = row.items
+      .map((item) => {
+        const fishId = String(item?.fish_id || "");
+        const fish = findFishById(fishId);
+        const qtyKg = Math.max(0, round2(numberOr(item?.qty_kg, 0)));
+        const specialPricePerKg = Math.max(0, round2(numberOr(item?.special_price_per_kg, 0)));
+        const lineTotal = round2(qtyKg * specialPricePerKg);
+        if (!fishId || qtyKg <= 0) {
+          return null;
+        }
+        return {
+          id: String(item?.id || makeId("ITM")),
+          fish_id: fishId,
+          fish_code: String(item?.fish_code || fish?.fish_code || fishId),
+          fish_name: String(item?.fish_name || fish?.name || fishId),
+          qty_kg: qtyKg,
+          special_price_per_kg: specialPricePerKg,
+          line_total: lineTotal
+        };
+      })
+      .filter(Boolean);
+
+    row.total_amount = round2(
+      row.items.reduce((sum, item) => sum + round2(numberOr(item?.line_total, 0)), 0)
+    );
+    row.amount_paid = Math.max(0, round2(numberOr(row.amount_paid, 0)));
+    row.balance_due = round2(Math.max(0, row.total_amount - row.amount_paid));
+    if (row.amount_paid <= 0) {
+      row.payment_status = "UNPAID";
+    } else if (row.balance_due <= 0) {
+      row.payment_status = "PAID";
+    } else {
+      row.payment_status = "PARTIAL";
+    }
+    if (typeof row.created_at !== "string") {
+      row.created_at = new Date().toISOString();
+    }
+    if (typeof row.updated_at !== "string") {
+      row.updated_at = row.created_at;
+    }
+  }
+
+  for (const row of DATA.customer_bills) {
+    if (!row.id) {
+      row.id = makeId("BIL");
+    }
+    if (!isIsoDate(String(row.date || ""))) {
+      row.date = isoDateToday();
+    }
+    if (typeof row.invoice_no !== "string") {
+      row.invoice_no = "";
+    }
+    if (typeof row.shop_name !== "string") {
+      row.shop_name = "";
+    }
+    if (typeof row.branch_id !== "string") {
+      row.branch_id = "";
+    }
+    row.order_channel = ORDER_CHANNEL_BILLING;
+    if (typeof row.currency !== "string") {
+      row.currency = state.settings.currency || "LKR";
+    }
+    if (typeof row.payment_method !== "string") {
+      row.payment_method = "cash";
+    }
+    if (typeof row.payment_terms !== "string") {
+      row.payment_terms = "immediate";
+    }
+    if (typeof row.notes !== "string") {
+      row.notes = "";
+    }
+    if (typeof row.shop_requests !== "string") {
+      row.shop_requests = "";
+    }
+    if (typeof row.stock_applied !== "boolean") {
+      row.stock_applied = false;
+    }
+    if (!Array.isArray(row.items)) {
+      row.items = [];
+    }
+    row.items = row.items
+      .map((item) => {
+        const fishId = String(item?.fish_id || "");
+        const fish = findFishById(fishId);
+        const qtyKg = Math.max(0, round2(numberOr(item?.qty_kg, 0)));
+        const specialPricePerKg = Math.max(0, round2(numberOr(item?.special_price_per_kg, 0)));
+        const lineTotal = round2(qtyKg * specialPricePerKg);
+        if (!fishId || qtyKg <= 0) {
+          return null;
+        }
+        return {
+          id: String(item?.id || makeId("ITM")),
+          fish_id: fishId,
+          fish_code: String(item?.fish_code || fish?.fish_code || fishId),
+          fish_name: String(item?.fish_name || fish?.name || fishId),
+          qty_kg: qtyKg,
+          special_price_per_kg: specialPricePerKg,
+          line_total: lineTotal
+        };
+      })
+      .filter(Boolean);
+
+    row.total_amount = round2(
+      row.items.reduce((sum, item) => sum + round2(numberOr(item?.line_total, 0)), 0)
+    );
+    row.amount_paid = Math.max(0, round2(numberOr(row.amount_paid, 0)));
+    row.balance_due = round2(Math.max(0, row.total_amount - row.amount_paid));
+    if (row.amount_paid <= 0) {
+      row.payment_status = "UNPAID";
+    } else if (row.balance_due <= 0) {
+      row.payment_status = "PAID";
+    } else {
+      row.payment_status = "PARTIAL";
+    }
+    if (typeof row.created_at !== "string") {
+      row.created_at = new Date().toISOString();
+    }
+    if (typeof row.updated_at !== "string") {
+      row.updated_at = row.created_at;
+    }
+  }
+
+  for (const row of DATA.app_error_logs) {
+    if (!row.id) {
+      row.id = makeId("ERR");
+    }
+    if (typeof row.datetime !== "string") {
+      row.datetime = new Date().toISOString();
+    }
+    if (typeof row.level !== "string") {
+      row.level = "ERROR";
+    }
+    if (typeof row.message !== "string") {
+      row.message = "Unknown error";
+    }
+    row.message = clampText(row.message, 600);
+    if (typeof row.page !== "string") {
+      row.page = "";
+    }
+    if (typeof row.branch_id !== "string") {
+      row.branch_id = "";
+    }
+    if (typeof row.user_id !== "string") {
+      row.user_id = "";
+    }
+    if (typeof row.user_role !== "string") {
+      row.user_role = "";
+    }
+    if (typeof row.source !== "string") {
+      row.source = "";
+    }
+    if (typeof row.stack !== "string") {
+      row.stack = "";
+    }
+    row.stack = clampText(row.stack, 8000);
+    if (typeof row.details !== "string") {
+      row.details = "";
+    }
+    row.details = clampText(row.details, 2000);
+    row.line = Number.isFinite(Number(row.line)) ? Number(row.line) : 0;
+    row.column = Number.isFinite(Number(row.column)) ? Number(row.column) : 0;
+  }
+
+  for (const row of DATA.activity_logs) {
+    if (!row.id) {
+      row.id = makeId("ACT");
+    }
+    if (typeof row.datetime !== "string") {
+      row.datetime = new Date().toISOString();
+    }
+    if (typeof row.action !== "string") {
+      row.action = "UPDATE";
+    }
+    row.action = clampText(String(row.action || "UPDATE").toUpperCase(), 80);
+    if (typeof row.summary !== "string") {
+      row.summary = "";
+    }
+    row.summary = clampText(row.summary, 260);
+    if (typeof row.details !== "string") {
+      row.details = normalizeActivityDetails(row.details);
+    }
+    row.details = clampText(row.details, 2000);
+    if (typeof row.page !== "string") {
+      row.page = "";
+    }
+    if (typeof row.branch_id !== "string") {
+      row.branch_id = "";
+    }
+    if (typeof row.user_id !== "string") {
+      row.user_id = "";
+    }
+    if (typeof row.user_name !== "string") {
+      row.user_name = "";
+    }
+    if (typeof row.user_role !== "string") {
+      row.user_role = "";
     }
   }
 
@@ -952,6 +1240,9 @@ async function reloadStoreFromServer(showAlert = false) {
     }
 
     if (showAlert) {
+      saveStoreWithActivity("BACKUP_RELOAD_SERVER", "Reloaded latest backup from server.", {
+        details: { updatedAt: payload?.updated_at || "", source: "manual_reload" }
+      });
       alert("Loaded latest backup from server.");
     }
     return true;
@@ -1025,19 +1316,75 @@ async function sendBackupToServer() {
     return;
   }
 
-  await uploadStoreSnapshot({
+  const sent = await uploadStoreSnapshot({
     endpoint: REMOTE_BACKUP_ENDPOINT,
     method: "POST",
     showAlert: true,
     successMessage: "Backup sent and saved on server."
   });
+  if (sent) {
+    saveStoreWithActivity("BACKUP_SEND_SERVER", "Sent backup to server.", {
+      details: { endpoint: REMOTE_BACKUP_ENDPOINT }
+    });
+  }
+}
+
+function getRolePermissions(role) {
+  const normalizedRole = String(role || "")
+    .trim()
+    .toLowerCase();
+  if (normalizedRole === "master") {
+    return [...new Set(PAGES.map((page) => page.permission).filter(Boolean))];
+  }
+  return Array.isArray(ROLE_PERMISSIONS[normalizedRole]) ? ROLE_PERMISSIONS[normalizedRole] : [];
+}
+
+function getRoleVisiblePageIds(role) {
+  const permissionSet = new Set(getRolePermissions(role));
+  return PAGES.filter((page) => permissionSet.has(page.permission)).map((page) => page.id);
+}
+
+function normalizeUserHiddenPageIds(role, value, fallbackVisiblePageIds = null) {
+  const normalizedRole = String(role || "")
+    .trim()
+    .toLowerCase();
+  if (normalizedRole === "master") {
+    return [];
+  }
+
+  const rolePageIds = getRoleVisiblePageIds(normalizedRole);
+  const rolePageSet = new Set(rolePageIds);
+  if (Array.isArray(value)) {
+    return [...new Set(value.map((item) => String(item || "").trim()).filter((item) => rolePageSet.has(item)))];
+  }
+
+  if (Array.isArray(fallbackVisiblePageIds)) {
+    const visibleSet = new Set(
+      fallbackVisiblePageIds
+        .map((item) => String(item || "").trim())
+        .filter((item) => rolePageSet.has(item))
+    );
+    return rolePageIds.filter((pageId) => !visibleSet.has(pageId));
+  }
+
+  return [];
+}
+
+function getUserHiddenPageIds(user) {
+  if (!user) {
+    return [];
+  }
+  return normalizeUserHiddenPageIds(user.role, user.hidden_page_ids, user.visible_page_ids);
 }
 
 function hasPermission(user, permission) {
+  if (!user) {
+    return false;
+  }
   if (user.role === "master") {
     return true;
   }
-  return ROLE_PERMISSIONS[user.role].includes(permission);
+  return getRolePermissions(user.role).includes(permission);
 }
 
 function normalizeUserBranchScope(role, branchId) {
@@ -1060,7 +1407,8 @@ function isGlobalAdminUser(user) {
 }
 
 function getVisiblePages(user) {
-  return PAGES.filter((page) => hasPermission(user, page.permission));
+  const hiddenSet = new Set(getUserHiddenPageIds(user));
+  return PAGES.filter((page) => hasPermission(user, page.permission) && !hiddenSet.has(page.id));
 }
 
 function canSelectAllBranches(user) {
@@ -1109,8 +1457,175 @@ function getBranchUsage(branchId) {
     settings: DATA.branch_fish_settings.filter((row) => row.branch_id === branchId).length,
     prices: DATA.daily_prices.filter((row) => row.branch_id === branchId).length,
     stock: DATA.daily_stock_entry.filter((row) => row.branch_id === branchId).length,
-    hold: DATA.hold_stock_entry.filter((row) => row.branch_id === branchId).length
+    hold: DATA.hold_stock_entry.filter((row) => row.branch_id === branchId).length,
+    orders: DATA.shop_orders.filter((row) => row.branch_id === branchId).length,
+    bills: DATA.customer_bills.filter((row) => row.branch_id === branchId).length
   };
+}
+
+function normalizeErrorMessage(value) {
+  if (value instanceof Error) {
+    return String(value.message || value.name || "Unknown error");
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  if (value === null || value === undefined) {
+    return "Unknown error";
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function normalizeActivityDetails(value) {
+  if (value === null || value === undefined) {
+    return "";
+  }
+  if (typeof value === "string") {
+    return clampText(value, 2000);
+  }
+  try {
+    return clampText(JSON.stringify(value), 2000);
+  } catch {
+    return clampText(String(value), 2000);
+  }
+}
+
+function clampText(value, maxLength = 2000) {
+  const text = String(value || "");
+  if (text.length <= maxLength) {
+    return text;
+  }
+  return `${text.slice(0, maxLength)} ...[truncated]`;
+}
+
+function normalizeErrorStack(value) {
+  if (value instanceof Error && typeof value.stack === "string") {
+    return clampText(value.stack, 8000);
+  }
+  return "";
+}
+
+function errorSeverityChip(levelText) {
+  const level = String(levelText || "ERROR").toUpperCase();
+  if (level === "PROMISE") {
+    return "warning";
+  }
+  if (level === "INFO") {
+    return "info";
+  }
+  return "critical";
+}
+
+function activityActionChip(actionText) {
+  const action = String(actionText || "").toUpperCase();
+  if (action.includes("DELETE") || action.includes("WIPE")) {
+    return "critical";
+  }
+  if (action.includes("BACKUP") || action.includes("IMPORT") || action.includes("RESTORE")) {
+    return "info";
+  }
+  if (
+    action.includes("UPDATE") ||
+    action.includes("EDIT") ||
+    action.includes("SAVE") ||
+    action.includes("SET")
+  ) {
+    return "warning";
+  }
+  return "ok";
+}
+
+function recordActivity(action, summary = "", options = {}) {
+  try {
+    if (!DATA) {
+      return null;
+    }
+    if (!Array.isArray(DATA.activity_logs)) {
+      DATA.activity_logs = [];
+    }
+
+    const actor = options.user || state.currentUser || null;
+    const entry = {
+      id: makeId("ACT"),
+      datetime: new Date().toISOString(),
+      action: clampText(String(action || "UPDATE").toUpperCase(), 80),
+      summary: clampText(String(summary || ""), 260),
+      details: normalizeActivityDetails(options.details),
+      page: String(options.page || state.activePage || ""),
+      branch_id: String(options.branchId ?? state.branchId ?? ""),
+      user_id: String(actor?.id || ""),
+      user_name: String(actor?.username || ""),
+      user_role: String(actor?.role || "")
+    };
+
+    DATA.activity_logs.unshift(entry);
+    if (DATA.activity_logs.length > MAX_ACTIVITY_LOGS) {
+      DATA.activity_logs.splice(MAX_ACTIVITY_LOGS);
+    }
+
+    return entry;
+  } catch {
+    return null;
+  }
+}
+
+function saveStoreWithActivity(action, summary, options = {}) {
+  recordActivity(action, summary, options);
+  return saveStore(options.saveOptions || {});
+}
+
+function captureAppError(error, context = {}) {
+  try {
+    if (!DATA || !Array.isArray(DATA.app_error_logs)) {
+      return;
+    }
+
+    const message = clampText(normalizeErrorMessage(error).trim() || "Unknown error", 600);
+    const lowMsg = message.toLowerCase();
+    if (lowMsg.includes("resizeobserver loop limit exceeded")) {
+      return;
+    }
+    if (error instanceof Error && error.name === "AbortError") {
+      return;
+    }
+
+    const level = String(context.level || "ERROR").toUpperCase();
+    const source = String(context.source || "");
+    const line = Number.isFinite(Number(context.line)) ? Number(context.line) : 0;
+    const column = Number.isFinite(Number(context.column)) ? Number(context.column) : 0;
+    const details = context.details
+      ? clampText(normalizeErrorMessage(context.details), 2000)
+      : "";
+
+    const entry = {
+      id: makeId("ERR"),
+      datetime: new Date().toISOString(),
+      level,
+      message,
+      stack: normalizeErrorStack(error),
+      page: String(state.activePage || ""),
+      branch_id: String(state.branchId || ""),
+      user_id: String(state.currentUser?.id || ""),
+      user_role: String(state.currentUser?.role || ""),
+      source,
+      line,
+      column,
+      details
+    };
+
+    DATA.app_error_logs.unshift(entry);
+    if (DATA.app_error_logs.length > MAX_APP_ERROR_LOGS) {
+      DATA.app_error_logs.splice(MAX_APP_ERROR_LOGS);
+    }
+
+    saveStore({ syncRemote: false, notifyOnQuota: false });
+  } catch {
+    // Never throw from error capture.
+  }
 }
 
 function findFishById(fishId) {
@@ -1537,6 +2052,353 @@ function upsertBranchSetting(branchId, fishId, minStock, targetStock, isActive) 
   }
 }
 
+function normalizeOrderChannel(value) {
+  const channel = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (channel === ORDER_CHANNEL_BILLING) {
+    return ORDER_CHANNEL_BILLING;
+  }
+  return ORDER_CHANNEL_SHOP;
+}
+
+function isShopOrderRow(row) {
+  return normalizeOrderChannel(row?.order_channel) === ORDER_CHANNEL_SHOP;
+}
+
+function isBillingRow(row) {
+  return normalizeOrderChannel(row?.order_channel) === ORDER_CHANNEL_BILLING;
+}
+
+function normalizePaymentMethod(value) {
+  const method = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (["cash", "bank", "card", "online", "credit"].includes(method)) {
+    return method;
+  }
+  return "cash";
+}
+
+function normalizePaymentTerms(value) {
+  const terms = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (["immediate", "7_days", "15_days", "month_end"].includes(terms)) {
+    return terms;
+  }
+  return "immediate";
+}
+
+function resolvePaymentStatus(totalAmount, amountPaid) {
+  const total = Math.max(0, round2(numberOr(totalAmount, 0)));
+  const paid = Math.max(0, round2(numberOr(amountPaid, 0)));
+  if (paid <= 0) {
+    return "UNPAID";
+  }
+  if (paid >= total) {
+    return "PAID";
+  }
+  return "PARTIAL";
+}
+
+function rebuildShopOrderFinancials(order) {
+  const safeItems = Array.isArray(order.items) ? order.items : [];
+  let totalAmount = 0;
+  for (const item of safeItems) {
+    const qtyKg = Math.max(0, round2(numberOr(item.qty_kg, 0)));
+    const pricePerKg = Math.max(0, round2(numberOr(item.special_price_per_kg, 0)));
+    item.qty_kg = qtyKg;
+    item.special_price_per_kg = pricePerKg;
+    item.line_total = round2(qtyKg * pricePerKg);
+    totalAmount = round2(totalAmount + item.line_total);
+  }
+
+  order.total_amount = totalAmount;
+  order.amount_paid = Math.max(0, round2(numberOr(order.amount_paid, 0)));
+  order.balance_due = round2(Math.max(0, totalAmount - order.amount_paid));
+  order.payment_status = resolvePaymentStatus(totalAmount, order.amount_paid);
+  order.payment_method = normalizePaymentMethod(order.payment_method);
+  order.payment_terms = normalizePaymentTerms(order.payment_terms);
+  order.updated_at = new Date().toISOString();
+  return order;
+}
+
+function nextShopInvoiceNo(dateText, branchId) {
+  const normalizedDate = isIsoDate(dateText) ? dateText : isoDateToday();
+  const dateToken = normalizedDate.replaceAll("-", "");
+  const branchToken = sanitizeFileNameToken(branchId || "ALL", "ALL");
+  const prefix = `INV-${branchToken}-${dateToken}-`;
+
+  let max = 0;
+  for (const row of DATA.shop_orders) {
+    if (!isShopOrderRow(row)) {
+      continue;
+    }
+    const invoiceNo = String(row.invoice_no || "").toUpperCase();
+    if (!invoiceNo.startsWith(prefix.toUpperCase())) {
+      continue;
+    }
+    const suffix = invoiceNo.slice(prefix.length);
+    const value = Number(suffix);
+    if (Number.isInteger(value)) {
+      max = Math.max(max, value);
+    }
+  }
+
+  return `${prefix}${String(max + 1).padStart(3, "0")}`;
+}
+
+function nextCustomerBillNo(dateText, branchId) {
+  const normalizedDate = isIsoDate(dateText) ? dateText : isoDateToday();
+  const dateToken = normalizedDate.replaceAll("-", "");
+  const branchToken = sanitizeFileNameToken(branchId || "ALL", "ALL");
+  const prefix = `BILL-${branchToken}-${dateToken}-`;
+
+  let max = 0;
+  for (const row of DATA.customer_bills) {
+    const invoiceNo = String(row.invoice_no || "").toUpperCase();
+    if (!invoiceNo.startsWith(prefix.toUpperCase())) {
+      continue;
+    }
+    const suffix = invoiceNo.slice(prefix.length);
+    const value = Number(suffix);
+    if (Number.isInteger(value)) {
+      max = Math.max(max, value);
+    }
+  }
+
+  return `${prefix}${String(max + 1).padStart(3, "0")}`;
+}
+
+function nextBillingCustomerId(dateText, branchId) {
+  const normalizedDate = isIsoDate(dateText) ? dateText : isoDateToday();
+  const dateToken = normalizedDate.replaceAll("-", "");
+  const branchToken = sanitizeFileNameToken(branchId || "ALL", "ALL");
+  const prefix = `CUS-${branchToken}-${dateToken}-`;
+
+  let max = 0;
+  for (const row of DATA.customer_bills) {
+    const customerId = String(row.shop_name || "").toUpperCase();
+    if (!customerId.startsWith(prefix.toUpperCase())) {
+      continue;
+    }
+    const suffix = customerId.slice(prefix.length);
+    const value = Number(suffix);
+    if (Number.isInteger(value)) {
+      max = Math.max(max, value);
+    }
+  }
+
+  return `${prefix}${String(max + 1).padStart(3, "0")}`;
+}
+
+function paymentMethodLabel(value) {
+  switch (normalizePaymentMethod(value)) {
+    case "bank":
+      return "BANK";
+    case "card":
+      return "CARD";
+    case "online":
+      return "ONLINE";
+    case "credit":
+      return "CREDIT";
+    default:
+      return "CASH";
+  }
+}
+
+function paymentTermsLabel(value) {
+  switch (normalizePaymentTerms(value)) {
+    case "7_days":
+      return "7 DAYS";
+    case "15_days":
+      return "15 DAYS";
+    case "month_end":
+      return "MONTH END";
+    default:
+      return "IMMEDIATE";
+  }
+}
+
+function createShopOrderItemFromInput(fish, qtyKgValue, specialPriceValue) {
+  const qtyKg = Math.max(0, round2(numberOr(qtyKgValue, 0)));
+  const specialPricePerKg = Math.max(0, round2(numberOr(specialPriceValue, 0)));
+  if (qtyKg <= 0 || specialPricePerKg <= 0) {
+    return null;
+  }
+  return {
+    id: makeId("ITM"),
+    fish_id: fish.id,
+    fish_code: String(fish.fish_code || fish.id),
+    fish_name: String(fish.name || fish.id),
+    qty_kg: qtyKg,
+    special_price_per_kg: specialPricePerKg,
+    line_total: round2(qtyKg * specialPricePerKg)
+  };
+}
+
+function getBillingAvailableStockKg(branchId, dateText, fishId) {
+  if (!branchId || !fishId) {
+    return 0;
+  }
+  const stockRow = getStockEntry(branchId, dateText, fishId);
+  return Math.max(0, round2(numberOr(stockRow?.closing_qty, 0)));
+}
+
+function applyBillingStockUpdate(order, direction = "decrease") {
+  if (!order || !Array.isArray(order.items)) {
+    return { ok: false, message: "Invalid bill stock payload." };
+  }
+
+  const change = direction === "increase" ? 1 : -1;
+  const branchId = String(order.branch_id || "");
+  const dateText = String(order.date || "");
+  if (!branchId || !isIsoDate(dateText)) {
+    return { ok: false, message: "Bill branch/date is invalid for stock update." };
+  }
+
+  if (change < 0) {
+    for (const item of order.items) {
+      const fishId = String(item?.fish_id || "");
+      const qtyKg = Math.max(0, round2(numberOr(item?.qty_kg, 0)));
+      if (!fishId || qtyKg <= 0) {
+        continue;
+      }
+      const currentKg = getBillingAvailableStockKg(branchId, dateText, fishId);
+      if (currentKg < qtyKg) {
+        const label = String(item?.fish_name || item?.fish_code || fishId);
+        return {
+          ok: false,
+          message: `${label} exceeds stock (${currentKg.toFixed(2)} kg available).`
+        };
+      }
+    }
+  }
+
+  for (const item of order.items) {
+    const fishId = String(item?.fish_id || "");
+    const qtyKg = Math.max(0, round2(numberOr(item?.qty_kg, 0)));
+    if (!fishId || qtyKg <= 0) {
+      continue;
+    }
+    const row = getStockEntry(branchId, dateText, fishId) || upsertStockEntry(branchId, dateText, fishId, {});
+    if (!row) {
+      const label = String(item?.fish_name || item?.fish_code || fishId);
+      return { ok: false, message: `Failed to update stock for ${label}.` };
+    }
+    const currentClosing = Math.max(0, round2(numberOr(row.closing_qty, 0)));
+    const nextClosing =
+      change < 0
+        ? round2(Math.max(0, currentClosing - qtyKg))
+        : round2(currentClosing + qtyKg);
+    upsertStockEntry(branchId, dateText, fishId, { closing_qty: nextClosing });
+  }
+
+  return { ok: true };
+}
+
+function shopOrderScopeBranchIds() {
+  return getBranchScopeIds(state.branchId);
+}
+
+function formatShopOrderItemLines(order) {
+  const lines = Array.isArray(order.items) ? order.items : [];
+  if (lines.length === 0) {
+    return "-";
+  }
+  return lines
+    .map(
+      (item) =>
+        `${String(item.fish_name || item.fish_id)} (${String(item.fish_code || item.fish_id)}): ${numberOr(
+          item.qty_kg,
+          0
+        ).toFixed(2)}kg x ${money(numberOr(item.special_price_per_kg, 0))}`
+    )
+    .join(" | ");
+}
+
+function buildShopOrderInvoiceText(order) {
+  const branch = findBranchById(order.branch_id);
+  const header = [
+    `${state.settings.company_name || "RTX FishOps"} - SHOP ORDER INVOICE`,
+    `Invoice: ${order.invoice_no || order.id}`,
+    `Date: ${order.date || "-"}`,
+    `Branch: ${branch?.name || order.branch_id || "-"}`,
+    `Shop: ${order.shop_name || "-"}`,
+    `Payment Method: ${paymentMethodLabel(order.payment_method)}`,
+    `Payment Terms: ${paymentTermsLabel(order.payment_terms)}`,
+    ""
+  ];
+
+  const lines = (Array.isArray(order.items) ? order.items : []).map((item, index) => {
+    const qty = numberOr(item.qty_kg, 0).toFixed(2);
+    const price = money(numberOr(item.special_price_per_kg, 0));
+    const total = money(numberOr(item.line_total, 0));
+    return `${index + 1}. ${item.fish_name} (${item.fish_code}) | ${qty} kg x ${price} = ${total}`;
+  });
+
+  const footer = [
+    "",
+    `Total Amount: ${money(numberOr(order.total_amount, 0))}`,
+    `Amount Paid: ${money(numberOr(order.amount_paid, 0))}`,
+    `Balance Due: ${money(numberOr(order.balance_due, 0))}`,
+    `Status: ${order.payment_status || "UNPAID"}`,
+    "",
+    `Notes: ${order.notes || "-"}`,
+    `Shop Requests: ${order.shop_requests || "-"}`
+  ];
+
+  return [...header, ...lines, ...footer].join("\n");
+}
+
+function downloadShopOrderInvoice(order) {
+  const invoiceToken = sanitizeFileNameToken(order.invoice_no || order.id || "invoice", "invoice");
+  const dateToken = isIsoDate(order.date) ? order.date : isoDateToday();
+  const filename = `shop-order-invoice-${invoiceToken}-${dateToken}.txt`;
+  triggerBackupDownload(buildShopOrderInvoiceText(order), filename);
+}
+
+function buildCustomerBillInvoiceText(order) {
+  const branch = findBranchById(order.branch_id);
+  const header = [
+    `${state.settings.company_name || "RTX FishOps"} - CUSTOMER BILL`,
+    `Bill No: ${order.invoice_no || order.id}`,
+    `Date: ${order.date || "-"}`,
+    `Branch: ${branch?.name || order.branch_id || "-"}`,
+    `Customer: ${order.shop_name || "-"}`,
+    `Payment Method: ${paymentMethodLabel(order.payment_method)}`,
+    `Payment Terms: ${paymentTermsLabel(order.payment_terms)}`,
+    ""
+  ];
+
+  const lines = (Array.isArray(order.items) ? order.items : []).map((item, index) => {
+    const qty = numberOr(item.qty_kg, 0).toFixed(2);
+    const price = money(numberOr(item.special_price_per_kg, 0));
+    const total = money(numberOr(item.line_total, 0));
+    return `${index + 1}. ${item.fish_name} (${item.fish_code}) | ${qty} kg x ${price} = ${total}`;
+  });
+
+  const footer = [
+    "",
+    `Total Amount: ${money(numberOr(order.total_amount, 0))}`,
+    `Amount Paid: ${money(numberOr(order.amount_paid, 0))}`,
+    `Balance Due: ${money(numberOr(order.balance_due, 0))}`,
+    `Status: ${order.payment_status || "UNPAID"}`,
+    "",
+    `Notes: ${order.notes || "-"}`
+  ];
+
+  return [...header, ...lines, ...footer].join("\n");
+}
+
+function downloadCustomerBillInvoice(order) {
+  const invoiceToken = sanitizeFileNameToken(order.invoice_no || order.id || "bill", "bill");
+  const dateToken = isIsoDate(order.date) ? order.date : isoDateToday();
+  const filename = `customer-bill-${invoiceToken}-${dateToken}.txt`;
+  triggerBackupDownload(buildCustomerBillInvoiceText(order), filename);
+}
+
 function buildSummary(branchId, dateText) {
   const scopedBranchIds = getBranchScopeIds(branchId);
   const branchSet = new Set(scopedBranchIds);
@@ -1947,6 +2809,92 @@ function buildMonthlySummary(branchId, monthText) {
   };
 }
 
+function buildBillingProgressSummary(branchId, dateText) {
+  const targetDate = isIsoDate(dateText) ? dateText : isoDateToday();
+  const scopeBranchIds = getBranchScopeIds(branchId);
+  const scopeBranchSet = new Set(scopeBranchIds);
+  const methodTotals = {
+    cash: { bills: 0, revenue: 0, income: 0, profit: 0 },
+    bank: { bills: 0, revenue: 0, income: 0, profit: 0 },
+    card: { bills: 0, revenue: 0, income: 0, profit: 0 },
+    online: { bills: 0, revenue: 0, income: 0, profit: 0 },
+    credit: { bills: 0, revenue: 0, income: 0, profit: 0 }
+  };
+  const totals = {
+    bills: 0,
+    revenue: 0,
+    income: 0,
+    profit: 0
+  };
+  const rows = [];
+
+  if (scopeBranchSet.size === 0) {
+    return {
+      date: targetDate,
+      rows,
+      totals,
+      methodTotals,
+      topRevenueBill: null,
+      topIncomeBill: null,
+      topProfitBill: null
+    };
+  }
+
+  for (const row of DATA.customer_bills) {
+    if (!scopeBranchSet.has(row.branch_id)) {
+      continue;
+    }
+    if (String(row.date || "") !== targetDate) {
+      continue;
+    }
+
+    const revenue = Math.max(0, round2(numberOr(row.total_amount, 0)));
+    const income = Math.max(0, round2(numberOr(row.amount_paid, 0)));
+    const profit = income;
+
+    totals.bills += 1;
+    totals.revenue = round2(totals.revenue + revenue);
+    totals.income = round2(totals.income + income);
+    totals.profit = round2(totals.profit + profit);
+
+    const method = normalizePaymentMethod(row.payment_method);
+    if (methodTotals[method]) {
+      methodTotals[method].bills += 1;
+      methodTotals[method].revenue = round2(methodTotals[method].revenue + revenue);
+      methodTotals[method].income = round2(methodTotals[method].income + income);
+      methodTotals[method].profit = round2(methodTotals[method].profit + profit);
+    }
+
+    const branch = findBranchById(row.branch_id);
+    rows.push({
+      id: String(row.id || ""),
+      invoice_no: String(row.invoice_no || row.id || ""),
+      branch_name: String(branch?.name || row.branch_id || "-"),
+      customer_name: String(row.shop_name || "-"),
+      payment_method: normalizePaymentMethod(row.payment_method),
+      revenue,
+      income,
+      profit,
+      created_at: String(row.created_at || "")
+    });
+  }
+
+  rows.sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")));
+  const topRevenueBill = rows.length ? [...rows].sort((a, b) => b.revenue - a.revenue)[0] : null;
+  const topIncomeBill = rows.length ? [...rows].sort((a, b) => b.income - a.income)[0] : null;
+  const topProfitBill = rows.length ? [...rows].sort((a, b) => b.profit - a.profit)[0] : null;
+
+  return {
+    date: targetDate,
+    rows,
+    totals,
+    methodTotals,
+    topRevenueBill,
+    topIncomeBill,
+    topProfitBill
+  };
+}
+
 function setBrandMark(element) {
   if (!element) {
     return;
@@ -1991,6 +2939,18 @@ function renderRoleOptions(selectedRole) {
   const roles = ["master", "admin", "user"];
   return roles
     .map((role) => `<option value="${role}" ${role === selectedRole ? "selected" : ""}>${role}</option>`)
+    .join("");
+}
+
+function renderPageAccessOptions(role, hiddenPageIds = []) {
+  const rolePageIds = getRoleVisiblePageIds(role);
+  const hiddenSet = new Set(normalizeUserHiddenPageIds(role, hiddenPageIds));
+  const rolePageSet = new Set(rolePageIds);
+  return PAGES.filter((page) => rolePageSet.has(page.id))
+    .map(
+      (page) =>
+        `<option value="${page.id}" ${hiddenSet.has(page.id) ? "selected" : ""}>${escapeHtml(page.title)}</option>`
+    )
     .join("");
 }
 
@@ -2201,7 +3161,16 @@ function renderDashboardPage() {
 function renderUsersPage() {
   const rows = DATA.users
     .map(
-      (user) => `
+      (user) => {
+        const hiddenPages = getUserHiddenPageIds(user);
+        const rolePages = getRoleVisiblePageIds(user.role);
+        const tabHint =
+          user.role === "master"
+            ? "Master always sees all tabs"
+            : hiddenPages.length === 0
+              ? "No hidden tabs"
+              : `${hiddenPages.length} tab(s) hidden`;
+        return `
       <tr>
         <td>${escapeHtml(user.username)}</td>
         <td><select id="user-role-${user.id}" class="table-select">${renderRoleOptions(user.role)}</select></td>
@@ -2215,6 +3184,18 @@ function renderUsersPage() {
             <option value="inactive" ${user.status === "inactive" ? "selected" : ""}>inactive</option>
           </select>
         </td>
+        <td>
+          <select
+            id="user-tabs-${user.id}"
+            class="table-select user-tabs-select"
+            multiple
+            size="7"
+            ${user.role === "master" ? "disabled" : ""}
+          >
+            ${renderPageAccessOptions(user.role, hiddenPages)}
+          </select>
+          <p class="hint user-tabs-hint">${escapeHtml(tabHint)} (${Math.max(0, rolePages.length - hiddenPages.length)} visible)</p>
+        </td>
         <td><input id="user-password-${user.id}" class="table-input" type="text" placeholder="New password" /></td>
         <td>
           <div class="table-actions">
@@ -2223,7 +3204,8 @@ function renderUsersPage() {
           </div>
         </td>
       </tr>
-    `
+    `;
+      }
     )
     .join("");
 
@@ -2239,6 +3221,10 @@ function renderUsersPage() {
           <option value="active" selected>active</option>
           <option value="inactive">inactive</option>
         </select>
+        <select id="newUserHiddenPages" class="full-width user-tabs-select" multiple size="7">
+          ${renderPageAccessOptions("user", [])}
+        </select>
+        <p class="hint full-width">Hide selected tabs for this user. Unselected tabs stay visible.</p>
         <button class="btn btn-primary" type="submit">Create User</button>
       </form>
     </section>
@@ -2253,6 +3239,7 @@ function renderUsersPage() {
               <th>Role</th>
               <th>Branch</th>
               <th>Status</th>
+              <th>Hidden Tabs</th>
               <th>Password</th>
               <th>Actions</th>
             </tr>
@@ -2882,6 +3869,631 @@ function renderHoldStockPage() {
   `;
 }
 
+function renderShopOrdersPage() {
+  const accessibleBranches = getAccessibleBranches(state.currentUser);
+  if (accessibleBranches.length === 0) {
+    return `
+      <section class="card wide">
+        <div class="card-header"><h3>Shop Orders</h3></div>
+        <p class="empty-state">No branches available for this user.</p>
+      </section>
+    `;
+  }
+
+  if (!state.shopOrderDraftBranchId) {
+    state.shopOrderDraftBranchId = isAllBranchesSelected()
+      ? accessibleBranches[0]?.id || ""
+      : state.branchId || accessibleBranches[0]?.id || "";
+  }
+  if (!accessibleBranches.some((branch) => branch.id === state.shopOrderDraftBranchId)) {
+    state.shopOrderDraftBranchId = accessibleBranches[0]?.id || "";
+  }
+  if (!Array.isArray(state.shopOrderDraftItems)) {
+    state.shopOrderDraftItems = [];
+  }
+
+  const scopeBranchIds = shopOrderScopeBranchIds();
+  const scopeBranchSet = new Set(scopeBranchIds);
+  const orders = DATA.shop_orders
+    .filter((row) => {
+      if (normalizeOrderChannel(row.order_channel) !== ORDER_CHANNEL_SHOP) {
+        return false;
+      }
+      if (!scopeBranchSet.has(row.branch_id)) {
+        return false;
+      }
+      return String(row.date || "") === state.date;
+    })
+    .sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")));
+
+  const totals = orders.reduce(
+    (acc, row) => {
+      acc.totalAmount = round2(acc.totalAmount + numberOr(row.total_amount, 0));
+      acc.totalPaid = round2(acc.totalPaid + numberOr(row.amount_paid, 0));
+      acc.totalBalance = round2(acc.totalBalance + numberOr(row.balance_due, 0));
+      if (String(row.payment_status || "").toUpperCase() === "UNPAID") {
+        acc.unpaidCount += 1;
+      }
+      return acc;
+    },
+    { totalAmount: 0, totalPaid: 0, totalBalance: 0, unpaidCount: 0 }
+  );
+
+  const fishOptions = DATA.fish_profiles
+    .filter((fish) => fish.status === "active")
+    .map((fish) => {
+      const label = `${escapeHtml(String(fish.name || fish.fish_code || fish.id))} (${escapeHtml(
+        String(fish.fish_code || fish.id)
+      )})`;
+      const byCode = fish.fish_code ? `<option value="${escapeHtml(fish.fish_code)}">${label}</option>` : "";
+      const byName =
+        fish.name && String(fish.name).toLowerCase() !== String(fish.fish_code || "").toLowerCase()
+          ? `<option value="${escapeHtml(fish.name)}">${label}</option>`
+          : "";
+      return `${byCode}${byName}`;
+    })
+    .join("");
+
+  const draftRows = state.shopOrderDraftItems
+    .map(
+      (item, index) => `
+        <tr>
+          <td>${escapeHtml(item.fish_name)} (${escapeHtml(item.fish_code)})</td>
+          <td>${numberOr(item.qty_kg, 0).toFixed(2)}</td>
+          <td>${money(numberOr(item.special_price_per_kg, 0))}</td>
+          <td>${money(numberOr(item.line_total, 0))}</td>
+          <td>
+            <button type="button" class="btn btn-danger shop-order-line-remove-btn" data-item-index="${index}">
+              Remove
+            </button>
+          </td>
+        </tr>
+      `
+    )
+    .join("");
+  const draftTotal = round2(
+    state.shopOrderDraftItems.reduce((sum, item) => sum + numberOr(item.line_total, 0), 0)
+  );
+
+  const branchOptions = accessibleBranches
+    .map(
+      (branch) =>
+        `<option value="${branch.id}" ${branch.id === state.shopOrderDraftBranchId ? "selected" : ""}>${escapeHtml(
+          branch.name
+        )}</option>`
+    )
+    .join("");
+
+  const rows = orders
+    .map((order) => {
+      const branch = findBranchById(order.branch_id);
+      const status = String(order.payment_status || "UNPAID").toUpperCase();
+      const statusClass = status === "PAID" ? "ok" : status === "PARTIAL" ? "warning" : "critical";
+      const searchable = [
+        String(order.shop_name || "").toLowerCase(),
+        String(order.invoice_no || "").toLowerCase(),
+        String(branch?.name || order.branch_id || "").toLowerCase(),
+        String(order.notes || "").toLowerCase(),
+        String(order.shop_requests || "").toLowerCase(),
+        formatShopOrderItemLines(order).toLowerCase()
+      ].join(" ");
+
+      return `
+        <tr data-fish-search="${escapeHtml(searchable)}">
+          <td>${escapeHtml(order.invoice_no || order.id)}</td>
+          <td>${escapeHtml(branch?.name || order.branch_id || "-")}</td>
+          <td>${escapeHtml(order.shop_name || "-")}</td>
+          <td>${escapeHtml(formatShopOrderItemLines(order))}</td>
+          <td>${money(numberOr(order.total_amount, 0))}</td>
+          <td>
+            <input
+              id="shop-order-paid-${order.id}"
+              class="table-input"
+              type="number"
+              min="0"
+              step="0.01"
+              value="${numberOr(order.amount_paid, 0)}"
+            />
+          </td>
+          <td>${money(numberOr(order.balance_due, 0))}</td>
+          <td><span class="chip ${statusClass}">${status}</span></td>
+          <td>
+            <select id="shop-order-method-${order.id}" class="table-select">
+              <option value="cash" ${normalizePaymentMethod(order.payment_method) === "cash" ? "selected" : ""}>Cash</option>
+              <option value="bank" ${normalizePaymentMethod(order.payment_method) === "bank" ? "selected" : ""}>Bank</option>
+              <option value="card" ${normalizePaymentMethod(order.payment_method) === "card" ? "selected" : ""}>Card</option>
+              <option value="online" ${normalizePaymentMethod(order.payment_method) === "online" ? "selected" : ""}>Online</option>
+              <option value="credit" ${normalizePaymentMethod(order.payment_method) === "credit" ? "selected" : ""}>Credit</option>
+            </select>
+            <select id="shop-order-terms-${order.id}" class="table-select" style="margin-top:6px;">
+              <option value="immediate" ${normalizePaymentTerms(order.payment_terms) === "immediate" ? "selected" : ""}>Immediate</option>
+              <option value="7_days" ${normalizePaymentTerms(order.payment_terms) === "7_days" ? "selected" : ""}>7 days</option>
+              <option value="15_days" ${normalizePaymentTerms(order.payment_terms) === "15_days" ? "selected" : ""}>15 days</option>
+              <option value="month_end" ${normalizePaymentTerms(order.payment_terms) === "month_end" ? "selected" : ""}>Month end</option>
+            </select>
+          </td>
+          <td>
+            <input
+              id="shop-order-notes-${order.id}"
+              class="table-input"
+              type="text"
+              value="${escapeHtml(order.notes || "")}"
+              placeholder="Internal note"
+            />
+            <input
+              id="shop-order-requests-${order.id}"
+              class="table-input"
+              type="text"
+              value="${escapeHtml(order.shop_requests || "")}"
+              placeholder="Shop requests / feedback"
+              style="margin-top:6px;"
+            />
+          </td>
+          <td>
+            <div class="table-actions">
+              <button type="button" class="btn btn-primary shop-order-save-btn" data-order-id="${order.id}">
+                Save
+              </button>
+              <button type="button" class="btn btn-soft shop-order-paid-btn" data-order-id="${order.id}">
+                Mark Paid
+              </button>
+              <button type="button" class="btn btn-outline shop-order-invoice-btn" data-order-id="${order.id}">
+                Invoice
+              </button>
+              <button type="button" class="btn btn-danger shop-order-delete-btn" data-order-id="${order.id}">
+                Delete
+              </button>
+            </div>
+          </td>
+        </tr>
+      `;
+    })
+    .join("");
+
+  return `
+    <section class="kpi-grid">
+      <article class="kpi-card"><p>Orders</p><h2>${orders.length}</h2></article>
+      <article class="kpi-card"><p>Unpaid Orders</p><h2>${totals.unpaidCount}</h2></article>
+      <article class="kpi-card"><p>Total Amount</p><h2>${money(totals.totalAmount)}</h2></article>
+      <article class="kpi-card"><p>Total Paid</p><h2>${money(totals.totalPaid)}</h2></article>
+      <article class="kpi-card"><p>Balance Due</p><h2>${money(totals.totalBalance)}</h2></article>
+    </section>
+
+    <section class="card section-gap">
+      <div class="card-header"><h3>Create Shop Order (${escapeHtml(state.date)})</h3></div>
+      <form id="shopOrderCreateForm" class="form-grid">
+        <select id="shopOrderBranchInput" ${canSelectAllBranches(state.currentUser) ? "" : "disabled"}>
+          ${branchOptions}
+        </select>
+        <input id="shopOrderShopNameInput" type="text" placeholder="Shop / Hotel / Restaurant name" required />
+        <input id="shopOrderInvoiceInput" type="text" placeholder="Invoice no (optional: auto)" />
+        <select id="shopOrderPaymentMethodInput">
+          <option value="cash">Cash</option>
+          <option value="bank">Bank</option>
+          <option value="card">Card</option>
+          <option value="online">Online</option>
+          <option value="credit">Credit</option>
+        </select>
+        <select id="shopOrderPaymentTermsInput">
+          <option value="immediate">Immediate</option>
+          <option value="7_days">7 days</option>
+          <option value="15_days">15 days</option>
+          <option value="month_end">Month end</option>
+        </select>
+        <input id="shopOrderAmountPaidInput" type="number" min="0" step="0.01" placeholder="Amount paid now" value="0" />
+        <textarea id="shopOrderNotesInput" class="full-width" rows="2" placeholder="Internal notes (optional)"></textarea>
+        <textarea id="shopOrderRequestsInput" class="full-width" rows="2" placeholder="Shop requests / suggestions / special instructions"></textarea>
+
+        <input id="shopOrderFishInput" list="shopOrderFishList" type="text" placeholder="Fish code or name" />
+        <datalist id="shopOrderFishList">${fishOptions}</datalist>
+        <input id="shopOrderQtyInput" type="number" min="0" step="0.01" placeholder="Qty kg" />
+        <input id="shopOrderSpecialPriceInput" type="number" min="0" step="0.01" placeholder="Special price per kg" />
+        <button class="btn btn-soft" type="button" id="addShopOrderLineBtn">Add Fish Line</button>
+        <button class="btn btn-primary" type="submit">Create Order</button>
+      </form>
+
+      <div class="table-wrap" style="margin-top:10px;">
+        <table>
+          <thead>
+            <tr>
+              <th>Fish</th>
+              <th>Qty (kg)</th>
+              <th>Special Price</th>
+              <th>Line Total</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="shopOrderDraftTableBody">
+            ${
+              draftRows ||
+              '<tr><td colspan="5" class="empty-state">No fish lines added yet.</td></tr>'
+            }
+          </tbody>
+        </table>
+      </div>
+      <p class="page-note">Draft invoice total: <strong>${money(draftTotal)}</strong></p>
+      <p class="page-note">
+        Finance options included: payment method, payment terms, paid amount, balance due, notes, and shop request text.
+      </p>
+    </section>
+
+    <section class="card wide">
+      <div class="card-header"><h3>Shop Orders List (${escapeHtml(state.date)})</h3></div>
+      <div class="table-search">
+        <input
+          id="shopOrdersSearchInput"
+          class="table-input"
+          type="search"
+          placeholder="Quick find by shop, invoice, fish, notes, or branch"
+          value="${escapeHtml(state.quickSearch.shopOrders)}"
+        />
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Invoice</th>
+              <th>Branch</th>
+              <th>Shop</th>
+              <th>Fish Lines</th>
+              <th>Total</th>
+              <th>Paid</th>
+              <th>Balance</th>
+              <th>Status</th>
+              <th>Finance</th>
+              <th>Notes / Requests</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="shopOrdersTableBody">
+            ${
+              rows ||
+              '<tr><td colspan="11" class="empty-state">No shop orders for selected date and scope.</td></tr>'
+            }
+            ${
+              rows
+                ? '<tr id="shopOrdersSearchEmptyRow" class="hidden"><td colspan="11" class="empty-state">No shop orders match your search.</td></tr>'
+                : ""
+            }
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function renderBillingPage() {
+  const accessibleBranches = getAccessibleBranches(state.currentUser);
+  if (accessibleBranches.length === 0) {
+    return `
+      <section class="card wide">
+        <div class="card-header"><h3>Billing</h3></div>
+        <p class="empty-state">No branches available for this user.</p>
+      </section>
+    `;
+  }
+
+  if (!state.billingDraftBranchId) {
+    state.billingDraftBranchId = isAllBranchesSelected()
+      ? accessibleBranches[0]?.id || ""
+      : state.branchId || accessibleBranches[0]?.id || "";
+  }
+  if (!accessibleBranches.some((branch) => branch.id === state.billingDraftBranchId)) {
+    state.billingDraftBranchId = accessibleBranches[0]?.id || "";
+  }
+  if (!Array.isArray(state.billingDraftItems)) {
+    state.billingDraftItems = [];
+  }
+  if (!state.billingDraftCategory) {
+    state.billingDraftCategory = BILLING_CATEGORY_ALL;
+  }
+
+  const pricedFishEntries = DATA.fish_profiles
+    .filter((fish) => fish.status === "active")
+    .map((fish) => {
+      const priceRow = getDailyPrice(state.billingDraftBranchId, state.date, fish.id, "morning");
+      const defaultPrice = Math.max(0, round2(numberOr(priceRow?.sell_price_per_unit, 0)));
+      const availableKg = getBillingAvailableStockKg(state.billingDraftBranchId, state.date, fish.id);
+      return { fish, defaultPrice, availableKg };
+    })
+    .filter((entry) => entry.defaultPrice > 0);
+
+  const allCategories = [
+    ...new Set(
+      pricedFishEntries
+        .map((entry) => String(entry.fish.category || "").trim())
+        .filter(Boolean)
+    )
+  ].sort((a, b) => a.localeCompare(b));
+  const selectedCategory = [BILLING_CATEGORY_ALL, ...allCategories].includes(state.billingDraftCategory)
+    ? state.billingDraftCategory
+    : BILLING_CATEGORY_ALL;
+  state.billingDraftCategory = selectedCategory;
+
+  const searchTokens = normalizeSearchTokens(state.billingDraftSearch);
+  const fishCards = pricedFishEntries
+    .filter((entry) => {
+      const fish = entry.fish;
+      if (selectedCategory !== BILLING_CATEGORY_ALL && String(fish.category || "") !== selectedCategory) {
+        return false;
+      }
+      const searchText = `${fishSearchText(fish, fish.id)} ${String(fish.category || "").toLowerCase()}`;
+      return searchTokens.every((token) => searchText.includes(token));
+    })
+    .sort((a, b) => String(a.fish.name || "").localeCompare(String(b.fish.name || "")));
+
+  const productCards = fishCards
+    .map((entry) => {
+      const fish = entry.fish;
+      const defaultPrice = entry.defaultPrice;
+      const availableKg = entry.availableKg;
+      const hasStock = availableKg > 0;
+      const title = String(fish.name || fish.fish_code || fish.id);
+      const label = fishDisplayLabel(fish, fish.id);
+      return `
+        <button
+          type="button"
+          class="billing-pos-product-btn ${hasStock ? "" : "out-of-stock"}"
+          data-fish-id="${escapeHtml(fish.id)}"
+          data-default-price="${defaultPrice}"
+          data-stock-kg="${availableKg}"
+          title="${escapeHtml(label)}"
+          ${hasStock ? "" : "disabled"}
+        >
+          <span class="billing-pos-product-price">${money(defaultPrice)}</span>
+          <span class="billing-pos-product-avatar">${escapeHtml(getInitials(title))}</span>
+          <span class="billing-pos-product-name">${escapeHtml(title)}</span>
+          <span class="billing-pos-product-meta">${escapeHtml(String(fish.category || "General"))}</span>
+          <span class="billing-pos-product-stock ${hasStock ? "in-stock" : "out-stock"}">${
+            hasStock ? `Stock: ${availableKg.toFixed(2)} kg` : "Stock not available"
+          }</span>
+        </button>
+      `;
+    })
+    .join("");
+
+  const branchOptions = accessibleBranches
+    .map(
+      (branch) =>
+        `<option value="${branch.id}" ${branch.id === state.billingDraftBranchId ? "selected" : ""}>${escapeHtml(
+          branch.name
+        )}</option>`
+    )
+    .join("");
+
+  const draftTotal = round2(
+    state.billingDraftItems.reduce((sum, item) => sum + numberOr(item.line_total, 0), 0)
+  );
+  const amountPaid = Math.max(0, round2(numberOr(state.billingDraftAmountPaid, 0)));
+  const balanceDue = round2(Math.max(0, draftTotal - amountPaid));
+  const itemCount = state.billingDraftItems.length;
+
+  const draftLines = state.billingDraftItems
+    .map(
+      (item, index) => `
+        <article class="billing-pos-cart-line">
+          <div class="billing-pos-cart-line-head">
+            <strong>${escapeHtml(item.fish_name)}</strong>
+            <button type="button" class="btn btn-danger billing-line-remove-btn" data-item-index="${index}">Remove</button>
+          </div>
+          <p class="billing-pos-cart-line-meta">${escapeHtml(item.fish_code)}</p>
+          <div class="billing-pos-cart-line-edit">
+            <input
+              class="table-input billing-line-qty-input"
+              type="number"
+              min="0.01"
+              step="0.01"
+              data-item-index="${index}"
+              value="${numberOr(item.qty_kg, 0)}"
+              aria-label="Qty kg"
+            />
+            <input
+              class="table-input billing-line-price-input"
+              type="number"
+              min="0.01"
+              step="0.01"
+              data-item-index="${index}"
+              value="${numberOr(item.special_price_per_kg, 0)}"
+              aria-label="Price per kg"
+            />
+            <strong>${money(numberOr(item.line_total, 0))}</strong>
+          </div>
+        </article>
+      `
+    )
+    .join("");
+
+  const scopeBranchSet = new Set(shopOrderScopeBranchIds());
+  const recentBills = DATA.customer_bills
+    .filter((row) => scopeBranchSet.has(row.branch_id) && String(row.date || "") === state.date)
+    .sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")))
+    .slice(0, 8);
+  if (
+    state.billingRecentDetailsId &&
+    !recentBills.some((row) => String(row.id || "") === state.billingRecentDetailsId)
+  ) {
+    state.billingRecentDetailsId = "";
+  }
+  const recentBillRows = recentBills
+    .map((row) => {
+      const status = String(row.payment_status || "UNPAID").toUpperCase();
+      const statusClass = status === "PAID" ? "ok" : status === "PARTIAL" ? "warning" : "critical";
+      const isDetailsOpen = state.billingRecentDetailsId === String(row.id || "");
+      const itemLines = (Array.isArray(row.items) ? row.items : [])
+        .map(
+          (item) =>
+            `<li>${escapeHtml(String(item.fish_name || item.fish_code || "-"))} (${escapeHtml(
+              String(item.fish_code || "-")
+            )}) - ${numberOr(item.qty_kg, 0).toFixed(2)} kg x ${money(numberOr(
+              item.special_price_per_kg,
+              0
+            ))} = ${money(numberOr(item.line_total, 0))}</li>`
+        )
+        .join("");
+      return `
+        <article class="billing-pos-recent-row">
+          <div>
+            <strong>${escapeHtml(row.invoice_no || row.id)}</strong>
+            <p>${escapeHtml(row.shop_name || "-")}</p>
+          </div>
+          <div class="billing-pos-recent-amount">${money(numberOr(row.total_amount, 0))}</div>
+          <span class="chip ${statusClass}">${status}</span>
+          <div class="billing-pos-recent-actions">
+            <button type="button" class="btn btn-soft billing-recent-details-btn" data-order-id="${row.id}">${
+              isDetailsOpen ? "Hide" : "Details"
+            }</button>
+            <button type="button" class="btn btn-outline billing-recent-invoice-btn" data-order-id="${row.id}">Download</button>
+            ${
+              status !== "PAID"
+                ? `<button type="button" class="btn btn-soft billing-recent-paid-btn" data-order-id="${row.id}">Paid</button>`
+                : ""
+            }
+            <button type="button" class="btn btn-danger billing-recent-delete-btn" data-order-id="${row.id}">Delete</button>
+          </div>
+          ${
+            isDetailsOpen
+              ? `
+                <div class="billing-pos-recent-details">
+                  <div class="billing-pos-recent-meta">
+                    <p><strong>Payment:</strong> ${escapeHtml(paymentMethodLabel(row.payment_method))}</p>
+                    <p><strong>Terms:</strong> ${escapeHtml(paymentTermsLabel(row.payment_terms))}</p>
+                    <p><strong>Paid:</strong> ${money(numberOr(row.amount_paid, 0))}</p>
+                    <p><strong>Balance:</strong> ${money(numberOr(row.balance_due, 0))}</p>
+                  </div>
+                  <p class="billing-pos-recent-note"><strong>Notes:</strong> ${escapeHtml(row.notes || "-")}</p>
+                  <p class="billing-pos-recent-note"><strong>Requests:</strong> ${escapeHtml(row.shop_requests || "-")}</p>
+                  <ul class="billing-pos-recent-items">
+                    ${itemLines || '<li class="empty-state">No fish lines in this bill.</li>'}
+                  </ul>
+                </div>
+              `
+              : ""
+          }
+        </article>
+      `;
+    })
+    .join("");
+
+  return `
+    <section class="billing-pos-shell">
+      <aside class="billing-pos-categories">
+        <h3>Categories</h3>
+        <button
+          type="button"
+          class="billing-pos-category-btn ${selectedCategory === BILLING_CATEGORY_ALL ? "active" : ""}"
+          data-category="${BILLING_CATEGORY_ALL}"
+        >
+          All Fish
+        </button>
+        ${allCategories
+          .map(
+            (category) => `
+              <button
+                type="button"
+                class="billing-pos-category-btn ${selectedCategory === category ? "active" : ""}"
+                data-category="${escapeHtml(category)}"
+              >
+                ${escapeHtml(category)}
+              </button>
+            `
+          )
+          .join("")}
+      </aside>
+
+      <section class="billing-pos-products">
+        <div class="billing-pos-toolbar">
+          <select id="billingBranchInput" ${canSelectAllBranches(state.currentUser) ? "" : "disabled"}>
+            ${branchOptions}
+          </select>
+          <input
+            id="billingFishSearchInput"
+            type="search"
+            placeholder="Search fish by code/name"
+            value="${escapeHtml(state.billingDraftSearch)}"
+          />
+        </div>
+        <div class="billing-pos-grid">
+          ${
+            productCards ||
+            '<p class="empty-state">No fish with daily price set for selected branch/date/category.</p>'
+          }
+        </div>
+      </section>
+
+      <aside class="billing-pos-cart">
+        <form id="billingCreateForm" class="billing-pos-cart-form">
+          <div class="billing-pos-cart-head">
+            <h3>Daily Sell Bill</h3>
+            <p>${escapeHtml(state.date)}</p>
+          </div>
+          <input id="billingCustomerNameInput" type="text" placeholder="Customer name (auto ID if empty)" value="${escapeHtml(
+            state.billingDraftCustomerName
+          )}" />
+          <input id="billingInvoiceInput" type="text" placeholder="Bill no (auto if empty)" value="${escapeHtml(
+            state.billingDraftInvoiceNo
+          )}" />
+          <div class="billing-pos-cart-fields">
+            <select id="billingPaymentMethodInput">
+              <option value="cash" ${normalizePaymentMethod(state.billingDraftPaymentMethod) === "cash" ? "selected" : ""}>Cash</option>
+              <option value="bank" ${normalizePaymentMethod(state.billingDraftPaymentMethod) === "bank" ? "selected" : ""}>Bank</option>
+              <option value="card" ${normalizePaymentMethod(state.billingDraftPaymentMethod) === "card" ? "selected" : ""}>Card</option>
+              <option value="online" ${normalizePaymentMethod(state.billingDraftPaymentMethod) === "online" ? "selected" : ""}>Online</option>
+              <option value="credit" ${normalizePaymentMethod(state.billingDraftPaymentMethod) === "credit" ? "selected" : ""}>Credit</option>
+            </select>
+            <select id="billingPaymentTermsInput">
+              <option value="immediate" ${normalizePaymentTerms(state.billingDraftPaymentTerms) === "immediate" ? "selected" : ""}>Immediate</option>
+              <option value="7_days" ${normalizePaymentTerms(state.billingDraftPaymentTerms) === "7_days" ? "selected" : ""}>7 days</option>
+              <option value="15_days" ${normalizePaymentTerms(state.billingDraftPaymentTerms) === "15_days" ? "selected" : ""}>15 days</option>
+              <option value="month_end" ${normalizePaymentTerms(state.billingDraftPaymentTerms) === "month_end" ? "selected" : ""}>Month end</option>
+            </select>
+            <input
+              id="billingAmountPaidInput"
+              type="number"
+              min="0"
+              step="0.01"
+              placeholder="Amount paid"
+              value="${numberOr(state.billingDraftAmountPaid, 0)}"
+            />
+          </div>
+          <textarea id="billingNotesInput" rows="2" placeholder="Internal notes">${escapeHtml(
+            state.billingDraftNotes
+          )}</textarea>
+          <textarea id="billingRequestsInput" rows="2" placeholder="Customer requests">${escapeHtml(
+            state.billingDraftRequests
+          )}</textarea>
+
+          <div class="billing-pos-cart-lines">
+            ${
+              draftLines ||
+              '<p class="empty-state">No fish lines. Click fish cards to add to bill.</p>'
+            }
+          </div>
+
+          <div class="billing-pos-cart-summary">
+            <p><span>Items</span><strong>${itemCount}</strong></p>
+            <p><span>Total</span><strong id="billingDraftTotalText">${money(draftTotal)}</strong></p>
+            <p><span>Paid</span><strong>${money(amountPaid)}</strong></p>
+            <p><span>Balance</span><strong id="billingDraftBalanceText">${money(balanceDue)}</strong></p>
+          </div>
+
+          <div class="billing-pos-cart-actions">
+            <button type="button" class="btn btn-outline" id="billingClearDraftBtn">Clear</button>
+            <button class="btn btn-primary billing-pos-pay-btn" type="submit">PAY ${money(draftTotal)}</button>
+          </div>
+        </form>
+
+        <div class="billing-pos-recent">
+          <h3>Today Bills</h3>
+          ${
+            recentBillRows ||
+            '<p class="empty-state">No bills yet for selected date/scope.</p>'
+          }
+        </div>
+      </aside>
+    </section>
+  `;
+}
+
 function renderRemainingStockHoldsPage() {
   const scopedBranchIds = getBranchScopeIds(state.branchId);
   const branchSet = new Set(scopedBranchIds);
@@ -3225,6 +4837,602 @@ function renderDailySummaryPage() {
   `;
 }
 
+function buildInterBranchTransferSuggestions(dateText) {
+  const accessibleBranches = getAccessibleBranches(state.currentUser);
+  const branchById = new Map(accessibleBranches.map((branch) => [branch.id, branch]));
+  const branchSet = new Set(branchById.keys());
+  const settingByBranchFish = new Map();
+
+  for (const setting of DATA.branch_fish_settings) {
+    if (!setting.is_active || !branchSet.has(setting.branch_id)) {
+      continue;
+    }
+    settingByBranchFish.set(`${setting.branch_id}::${setting.fish_id}`, setting);
+  }
+
+  const plansByFish = new Map();
+  let totalShortage = 0;
+  let totalSurplus = 0;
+  let criticalTargets = 0;
+
+  for (const setting of settingByBranchFish.values()) {
+    const fish = findFishById(setting.fish_id);
+    if (fish && fish.status !== "active") {
+      continue;
+    }
+
+    const entry = getStockEntry(setting.branch_id, dateText, setting.fish_id);
+    const closing = Math.max(0, round2(numberOr(entry?.closing_qty, 0)));
+    const minStock = Math.max(0, round2(numberOr(setting.min_stock, 0)));
+    const targetStock = Math.max(minStock, round2(numberOr(setting.target_stock, 0)));
+    const shortage = Math.max(0, round2(targetStock - closing));
+    const surplus = Math.max(0, round2(closing - targetStock));
+    const alert = stockAlert(closing, minStock, targetStock);
+
+    let plan = plansByFish.get(setting.fish_id);
+    if (!plan) {
+      plan = { fish, deficits: [], surpluses: [] };
+      plansByFish.set(setting.fish_id, plan);
+    }
+
+    const branchName = branchById.get(setting.branch_id)?.name || setting.branch_id;
+    if (shortage > 0) {
+      totalShortage = round2(totalShortage + shortage);
+      if (alert === "CRITICAL") {
+        criticalTargets += 1;
+      }
+      plan.deficits.push({
+        branch_id: setting.branch_id,
+        branch_name: branchName,
+        closing,
+        target_stock: targetStock,
+        shortage,
+        alert,
+        moved: 0
+      });
+    }
+
+    if (surplus > 0) {
+      totalSurplus = round2(totalSurplus + surplus);
+      plan.surpluses.push({
+        branch_id: setting.branch_id,
+        branch_name: branchName,
+        closing,
+        target_stock: targetStock,
+        surplus,
+        moved: 0
+      });
+    }
+  }
+
+  const ALERT_PRIORITY = { CRITICAL: 2, LOW: 1, OK: 0 };
+  const suggestions = [];
+  const uncoveredNeeds = [];
+
+  for (const [fishId, plan] of plansByFish.entries()) {
+    const fish = plan.fish || {
+      id: fishId,
+      fish_code: fishId,
+      name: fishId,
+      unit: "kg",
+      status: "active"
+    };
+    const fishCode = String(fish.fish_code || fishId);
+    const fishName = String(fish.name || fishId);
+    const fishUnit = String(fish.unit || "kg");
+
+    const deficits = [...plan.deficits].sort((a, b) => {
+      const priorityDiff = ALERT_PRIORITY[b.alert] - ALERT_PRIORITY[a.alert];
+      if (priorityDiff !== 0) {
+        return priorityDiff;
+      }
+      return b.shortage - a.shortage;
+    });
+    const surpluses = [...plan.surpluses].sort((a, b) => b.surplus - a.surplus);
+
+    for (const deficit of deficits) {
+      for (const source of surpluses) {
+        const remainingNeed = round2(Math.max(0, deficit.shortage - deficit.moved));
+        const remainingSupply = round2(Math.max(0, source.surplus - source.moved));
+        if (remainingNeed <= 0 || remainingSupply <= 0) {
+          continue;
+        }
+
+        const qty = round2(Math.min(remainingNeed, remainingSupply));
+        if (qty <= 0) {
+          continue;
+        }
+
+        const fromClosingBefore = round2(source.closing - source.moved);
+        const toClosingBefore = round2(deficit.closing + deficit.moved);
+
+        source.moved = round2(source.moved + qty);
+        deficit.moved = round2(deficit.moved + qty);
+
+        suggestions.push({
+          fish_id: fishId,
+          fish_code: fishCode,
+          fish_name: fishName,
+          fish_unit: fishUnit,
+          from_branch_id: source.branch_id,
+          from_branch_name: source.branch_name,
+          to_branch_id: deficit.branch_id,
+          to_branch_name: deficit.branch_name,
+          qty,
+          target_alert: deficit.alert,
+          from_closing_before: fromClosingBefore,
+          from_closing_after: round2(fromClosingBefore - qty),
+          to_closing_before: toClosingBefore,
+          to_closing_after: round2(toClosingBefore + qty),
+          target_stock: deficit.target_stock,
+          remaining_need_after: round2(Math.max(0, deficit.shortage - deficit.moved))
+        });
+      }
+    }
+
+    for (const deficit of deficits) {
+      const remaining = round2(Math.max(0, deficit.shortage - deficit.moved));
+      if (remaining <= 0) {
+        continue;
+      }
+      uncoveredNeeds.push({
+        fish_id: fishId,
+        fish_code: fishCode,
+        fish_name: fishName,
+        fish_unit: fishUnit,
+        branch_id: deficit.branch_id,
+        branch_name: deficit.branch_name,
+        remaining_shortage: remaining,
+        alert: deficit.alert
+      });
+    }
+  }
+
+  suggestions.sort((a, b) => {
+    const priorityDiff = ALERT_PRIORITY[b.target_alert] - ALERT_PRIORITY[a.target_alert];
+    if (priorityDiff !== 0) {
+      return priorityDiff;
+    }
+    if (b.qty !== a.qty) {
+      return b.qty - a.qty;
+    }
+    if (a.to_branch_name !== b.to_branch_name) {
+      return a.to_branch_name.localeCompare(b.to_branch_name);
+    }
+    return a.fish_name.localeCompare(b.fish_name);
+  });
+
+  uncoveredNeeds.sort((a, b) => {
+    const priorityDiff = ALERT_PRIORITY[b.alert] - ALERT_PRIORITY[a.alert];
+    if (priorityDiff !== 0) {
+      return priorityDiff;
+    }
+    if (b.remaining_shortage !== a.remaining_shortage) {
+      return b.remaining_shortage - a.remaining_shortage;
+    }
+    if (a.branch_name !== b.branch_name) {
+      return a.branch_name.localeCompare(b.branch_name);
+    }
+    return a.fish_name.localeCompare(b.fish_name);
+  });
+
+  const suggestedTotal = round2(suggestions.reduce((sum, row) => sum + row.qty, 0));
+  const uncoveredTotal = round2(Math.max(0, totalShortage - suggestedTotal));
+  const coveragePercent =
+    totalShortage > 0 ? round2((suggestedTotal / totalShortage) * 100) : 100;
+
+  return {
+    branchCount: accessibleBranches.length,
+    totalShortage,
+    totalSurplus,
+    suggestedTotal,
+    uncoveredTotal,
+    coveragePercent,
+    criticalTargets,
+    suggestions,
+    uncoveredNeeds
+  };
+}
+
+function renderTransferSuggestionsPage() {
+  const model = buildInterBranchTransferSuggestions(state.date);
+
+  let emptyMessage = "No transfer suggestions generated for this date.";
+  if (model.totalShortage <= 0) {
+    emptyMessage = "No shortage found. All branches are at or above target stock.";
+  } else if (model.totalSurplus <= 0) {
+    emptyMessage = "Shortage exists, but no branch has surplus stock above target.";
+  }
+
+  const suggestionsRows =
+    model.suggestions.length === 0
+      ? `<tr><td colspan="10" class="empty-state">${escapeHtml(emptyMessage)}</td></tr>`
+      : model.suggestions
+          .map((row) => {
+            const searchable = `${row.fish_code} ${row.fish_name} ${row.from_branch_name} ${row.to_branch_name}`.toLowerCase();
+            return `
+              <tr data-fish-search="${escapeHtml(searchable)}">
+                <td>${escapeHtml(row.fish_name)} (${escapeHtml(row.fish_code)})</td>
+                <td>${escapeHtml(row.from_branch_name)}</td>
+                <td>${escapeHtml(row.to_branch_name)}</td>
+                <td>${row.qty.toFixed(2)} ${escapeHtml(row.fish_unit)}</td>
+                <td><span class="chip ${row.target_alert.toLowerCase()}">${row.target_alert}</span></td>
+                <td>${row.from_closing_before.toFixed(2)} -> ${row.from_closing_after.toFixed(2)}</td>
+                <td>${row.to_closing_before.toFixed(2)} -> ${row.to_closing_after.toFixed(2)}</td>
+                <td>${row.target_stock.toFixed(2)}</td>
+                <td>${row.remaining_need_after.toFixed(2)}</td>
+                <td>${escapeHtml(row.from_branch_id)} -> ${escapeHtml(row.to_branch_id)}</td>
+              </tr>
+            `;
+          })
+          .join("");
+
+  const uncoveredRows =
+    model.uncoveredNeeds.length === 0
+      ? '<tr><td colspan="4" class="empty-state">All computed shortages are covered by suggested transfers.</td></tr>'
+      : model.uncoveredNeeds
+          .map(
+            (row) => `
+              <tr>
+                <td>${escapeHtml(row.fish_name)} (${escapeHtml(row.fish_code)})</td>
+                <td>${escapeHtml(row.branch_name)}</td>
+                <td>${row.remaining_shortage.toFixed(2)} ${escapeHtml(row.fish_unit)}</td>
+                <td><span class="chip ${row.alert.toLowerCase()}">${row.alert}</span></td>
+              </tr>
+            `
+          )
+          .join("");
+
+  return `
+    <section class="kpi-grid">
+      <article class="kpi-card"><p>Critical Targets</p><h2>${model.criticalTargets}</h2></article>
+      <article class="kpi-card"><p>Total Shortage</p><h2>${model.totalShortage.toFixed(2)}</h2></article>
+      <article class="kpi-card"><p>Suggested Transfer</p><h2>${model.suggestedTotal.toFixed(2)}</h2></article>
+      <article class="kpi-card"><p>Uncovered Shortage</p><h2>${model.uncoveredTotal.toFixed(2)}</h2></article>
+    </section>
+
+    <section class="card wide">
+      <div class="card-header"><h3>Inter-Branch Transfer Suggestions</h3></div>
+      <p class="page-note">
+        Scope: ${model.branchCount} active branch(es) | Date: ${escapeHtml(state.date)} |
+        Coverage: ${model.coveragePercent.toFixed(2)}%. Suggestions keep source branch at or above target stock.
+      </p>
+      <div class="table-search">
+        <input
+          id="transferSuggestionsSearchInput"
+          class="table-input"
+          type="search"
+          placeholder="Quick find by fish or branch name"
+          value="${escapeHtml(state.quickSearch.transferSuggestions)}"
+        />
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Fish</th>
+              <th>From Branch</th>
+              <th>To Branch</th>
+              <th>Suggested Qty</th>
+              <th>Target Alert</th>
+              <th>From Closing (B -> A)</th>
+              <th>To Closing (B -> A)</th>
+              <th>Target Stock</th>
+              <th>Need Left</th>
+              <th>Route</th>
+            </tr>
+          </thead>
+          <tbody id="transferSuggestionsTableBody">
+            ${suggestionsRows}
+            ${
+              model.suggestions.length > 0
+                ? '<tr id="transferSuggestionsSearchEmptyRow" class="hidden"><td colspan="10" class="empty-state">No suggestions match your search.</td></tr>'
+                : ""
+            }
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card wide">
+      <div class="card-header"><h3>Uncovered Needs</h3></div>
+      <p class="page-note">These shortages remain because no surplus was available in other branches.</p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Fish</th>
+              <th>Branch</th>
+              <th>Remaining Shortage</th>
+              <th>Priority</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${uncoveredRows}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function renderErrorLogsPage() {
+  const scopeBranchIds = getBranchScopeIds(state.branchId);
+  const branchSet = new Set(scopeBranchIds);
+  const showAllBranches = canSelectAllBranches(state.currentUser) && isAllBranchesSelected();
+
+  const logs = DATA.app_error_logs
+    .filter((row) => {
+      const rowBranch = String(row.branch_id || "");
+      if (!rowBranch) {
+        return true;
+      }
+      if (showAllBranches) {
+        return true;
+      }
+      if (branchSet.size === 0) {
+        return false;
+      }
+      return branchSet.has(rowBranch);
+    })
+    .sort((a, b) => String(b.datetime || "").localeCompare(String(a.datetime || "")))
+    .slice(0, 300);
+
+  const today = isoDateToday();
+  const stats = logs.reduce(
+    (acc, row) => {
+      const level = String(row.level || "ERROR").toUpperCase();
+      acc.total += 1;
+      if (level === "PROMISE") {
+        acc.promise += 1;
+      } else {
+        acc.error += 1;
+      }
+      if (String(row.datetime || "").slice(0, 10) === today) {
+        acc.today += 1;
+      }
+      return acc;
+    },
+    { total: 0, error: 0, promise: 0, today: 0 }
+  );
+
+  const rows = logs
+    .map((row) => {
+      const level = String(row.level || "ERROR").toUpperCase();
+      const chipClass = errorSeverityChip(level);
+      const branchLabel = getBranchScopeLabel(row.branch_id) || row.branch_id || "-";
+      const user = row.user_id ? findUserById(row.user_id) : null;
+      const userLabel = user ? `${user.username} (${row.user_role || "-"})` : row.user_role || "-";
+      const time = String(row.datetime || "").replace("T", " ").replace("Z", "");
+      const sourceText = row.source
+        ? `${row.source}${row.line ? `:${row.line}` : ""}${row.column ? `:${row.column}` : ""}`
+        : "-";
+      const detailsBlocks = [row.details, row.stack].filter(Boolean).join("\n");
+      const searchable = [
+        String(row.message || "").toLowerCase(),
+        String(row.page || "").toLowerCase(),
+        String(branchLabel || "").toLowerCase(),
+        String(userLabel || "").toLowerCase(),
+        String(sourceText || "").toLowerCase(),
+        String(row.details || "").toLowerCase()
+      ].join(" ");
+
+      return `
+        <tr data-fish-search="${escapeHtml(searchable)}">
+          <td>${escapeHtml(time || "-")}</td>
+          <td><span class="chip ${chipClass}">${escapeHtml(level)}</span></td>
+          <td>${escapeHtml(row.page || "-")}</td>
+          <td>${escapeHtml(branchLabel)}</td>
+          <td>${escapeHtml(userLabel)}</td>
+          <td>${escapeHtml(row.message || "-")}</td>
+          <td>${escapeHtml(sourceText)}</td>
+          <td>
+            ${
+              detailsBlocks
+                ? `<details><summary>View</summary><pre class="error-log-pre">${escapeHtml(detailsBlocks)}</pre></details>`
+                : "-"
+            }
+          </td>
+        </tr>
+      `;
+    })
+    .join("");
+
+  const clearDisabled = state.currentUser?.role === "master" ? "" : "disabled";
+  return `
+    <section class="kpi-grid">
+      <article class="kpi-card"><p>Total Logs</p><h2>${stats.total}</h2></article>
+      <article class="kpi-card"><p>Errors</p><h2>${stats.error}</h2></article>
+      <article class="kpi-card"><p>Promise Rejections</p><h2>${stats.promise}</h2></article>
+      <article class="kpi-card"><p>Today</p><h2>${stats.today}</h2></article>
+    </section>
+
+    <section class="card wide">
+      <div class="card-header"><h3>Error Logs</h3></div>
+      <div class="inline-actions" style="margin-bottom:10px;">
+        <button type="button" class="btn btn-outline" id="downloadErrorLogsBtn">Download Logs JSON</button>
+        <button type="button" class="btn btn-danger" id="clearErrorLogsBtn" ${clearDisabled}>Clear Logs</button>
+      </div>
+      <div class="table-search">
+        <input
+          id="errorLogsSearchInput"
+          class="table-input"
+          type="search"
+          placeholder="Quick find by message, page, user, or source"
+          value="${escapeHtml(state.quickSearch.errorLogs)}"
+        />
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Level</th>
+              <th>Page</th>
+              <th>Branch</th>
+              <th>User</th>
+              <th>Message</th>
+              <th>Source</th>
+              <th>Details</th>
+            </tr>
+          </thead>
+          <tbody id="errorLogsTableBody">
+            ${
+              rows ||
+              '<tr><td colspan="8" class="empty-state">No errors captured for this scope yet.</td></tr>'
+            }
+            ${
+              rows
+                ? '<tr id="errorLogsSearchEmptyRow" class="hidden"><td colspan="8" class="empty-state">No logs match your search.</td></tr>'
+                : ""
+            }
+          </tbody>
+        </table>
+      </div>
+      <p class="page-note">Latest 300 logs are shown in this tab for performance.</p>
+    </section>
+  `;
+}
+
+function renderActivityLogsPage() {
+  const scopeBranchIds = getBranchScopeIds(state.branchId);
+  const branchSet = new Set(scopeBranchIds);
+  const showAllBranches = canSelectAllBranches(state.currentUser) && isAllBranchesSelected();
+
+  const logs = (DATA.activity_logs || [])
+    .filter((row) => {
+      const rowBranch = String(row.branch_id || "");
+      if (!rowBranch) {
+        return true;
+      }
+      if (showAllBranches) {
+        return true;
+      }
+      if (branchSet.size === 0) {
+        return false;
+      }
+      return branchSet.has(rowBranch);
+    })
+    .sort((a, b) => String(b.datetime || "").localeCompare(String(a.datetime || "")))
+    .slice(0, 500);
+
+  const today = isoDateToday();
+  const stats = logs.reduce(
+    (acc, row) => {
+      const action = String(row.action || "").toUpperCase();
+      acc.total += 1;
+      if (String(row.datetime || "").slice(0, 10) === today) {
+        acc.today += 1;
+      }
+      if (action.includes("DELETE") || action.includes("WIPE")) {
+        acc.delete += 1;
+      } else if (action.includes("BACKUP") || action.includes("IMPORT") || action.includes("RESTORE")) {
+        acc.backup += 1;
+      } else {
+        acc.update += 1;
+      }
+      return acc;
+    },
+    { total: 0, update: 0, delete: 0, backup: 0, today: 0 }
+  );
+
+  const rows = logs
+    .map((row) => {
+      const action = String(row.action || "UPDATE").toUpperCase();
+      const chipClass = activityActionChip(action);
+      const branchLabel = getBranchScopeLabel(row.branch_id) || row.branch_id || "-";
+      const user =
+        row.user_id ? findUserById(row.user_id) : null;
+      const userName = row.user_name || user?.username || "-";
+      const userRole = row.user_role || user?.role || "-";
+      const userLabel = `${userName} (${userRole})`;
+      const time = String(row.datetime || "").replace("T", " ").replace("Z", "");
+      const detailsText = String(row.details || "");
+      const searchable = [
+        String(action || "").toLowerCase(),
+        String(row.summary || "").toLowerCase(),
+        String(row.page || "").toLowerCase(),
+        String(branchLabel || "").toLowerCase(),
+        String(userLabel || "").toLowerCase(),
+        detailsText.toLowerCase()
+      ].join(" ");
+
+      return `
+        <tr data-fish-search="${escapeHtml(searchable)}">
+          <td>${escapeHtml(time || "-")}</td>
+          <td><span class="chip ${chipClass}">${escapeHtml(action)}</span></td>
+          <td>${escapeHtml(row.page || "-")}</td>
+          <td>${escapeHtml(branchLabel)}</td>
+          <td>${escapeHtml(userLabel)}</td>
+          <td>${escapeHtml(row.summary || "-")}</td>
+          <td>
+            ${
+              detailsText
+                ? `<details><summary>View</summary><pre class="error-log-pre">${escapeHtml(detailsText)}</pre></details>`
+                : "-"
+            }
+          </td>
+        </tr>
+      `;
+    })
+    .join("");
+
+  const clearDisabled = state.currentUser?.role === "master" ? "" : "disabled";
+  return `
+    <section class="kpi-grid">
+      <article class="kpi-card"><p>Total Logs</p><h2>${stats.total}</h2></article>
+      <article class="kpi-card"><p>Create/Update</p><h2>${stats.update}</h2></article>
+      <article class="kpi-card"><p>Delete/Wipe</p><h2>${stats.delete}</h2></article>
+      <article class="kpi-card"><p>Backup/Import</p><h2>${stats.backup}</h2></article>
+      <article class="kpi-card"><p>Today</p><h2>${stats.today}</h2></article>
+    </section>
+
+    <section class="card wide">
+      <div class="card-header"><h3>Activity Logs</h3></div>
+      <div class="inline-actions" style="margin-bottom:10px;">
+        <button type="button" class="btn btn-outline" id="downloadActivityLogsBtn">Download Logs JSON</button>
+        <button type="button" class="btn btn-danger" id="clearActivityLogsBtn" ${clearDisabled}>Clear Logs</button>
+      </div>
+      <div class="table-search">
+        <input
+          id="activityLogsSearchInput"
+          class="table-input"
+          type="search"
+          placeholder="Quick find by action, summary, page, user, or branch"
+          value="${escapeHtml(state.quickSearch.activityLogs)}"
+        />
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Action</th>
+              <th>Page</th>
+              <th>Branch</th>
+              <th>User</th>
+              <th>Summary</th>
+              <th>Details</th>
+            </tr>
+          </thead>
+          <tbody id="activityLogsTableBody">
+            ${
+              rows ||
+              '<tr><td colspan="7" class="empty-state">No activity captured for this scope yet.</td></tr>'
+            }
+            ${
+              rows
+                ? '<tr id="activityLogsSearchEmptyRow" class="hidden"><td colspan="7" class="empty-state">No logs match your search.</td></tr>'
+                : ""
+            }
+          </tbody>
+        </table>
+      </div>
+      <p class="page-note">Latest 500 activity records are shown for performance.</p>
+    </section>
+  `;
+}
+
 function renderReportsPage() {
   const { rows, totals } = buildSummary(state.branchId, state.date);
   const wasteTotal = round2(rows.reduce((sum, row) => sum + row.waste, 0));
@@ -3345,6 +5553,150 @@ function renderMonthlyCalculationsPage() {
                           <td><span class="chip ${row.hasMissingPrice ? "warning" : "ok"}">${
                             row.hasMissingPrice ? "MISSING PRICE" : "OK"
                           }</span></td>
+                        </tr>
+                      `
+                    )
+                    .join("")
+            }
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function renderBillingProgressPage() {
+  if (state.currentUser?.role !== "master") {
+    return `
+      <section class="card wide">
+        <div class="card-header"><h3>Daily Sell Billing Progress</h3></div>
+        <p class="empty-state">Only master can access Billing Progress.</p>
+      </section>
+    `;
+  }
+
+  const summary = buildBillingProgressSummary(state.branchId, state.date);
+  const avgBill = summary.totals.bills ? round2(summary.totals.revenue / summary.totals.bills) : 0;
+
+  const topRevenueText = summary.topRevenueBill
+    ? `${summary.topRevenueBill.invoice_no} (${money(summary.topRevenueBill.revenue)})`
+    : "-";
+  const topIncomeText = summary.topIncomeBill
+    ? `${summary.topIncomeBill.invoice_no} (${money(summary.topIncomeBill.income)})`
+    : "-";
+  const topProfitText = summary.topProfitBill
+    ? `${summary.topProfitBill.invoice_no} (${money(summary.topProfitBill.profit)})`
+    : "-";
+
+  const paymentMethodRows = [
+    { key: "cash", label: "Cash" },
+    { key: "bank", label: "Bank" },
+    { key: "card", label: "Card" },
+    { key: "online", label: "Online" },
+    { key: "credit", label: "Credit" }
+  ]
+    .map((entry) => {
+      const metrics = summary.methodTotals[entry.key];
+      return `
+        <tr>
+          <td>${entry.label}</td>
+          <td>${metrics.bills}</td>
+          <td>${money(metrics.revenue)}</td>
+          <td>${money(metrics.income)}</td>
+          <td>${money(metrics.profit)}</td>
+        </tr>
+      `;
+    })
+    .join("");
+
+  return `
+    <section class="card wide">
+      <div class="card-header"><h3>Daily Sell Billing Progress</h3></div>
+      <div class="inline-actions">
+        <label for="billingProgressDateInput"><strong>Date</strong></label>
+        <input id="billingProgressDateInput" class="table-input" type="date" value="${escapeHtml(summary.date)}" />
+      </div>
+      <p class="page-note">
+        Scope: ${escapeHtml(getBranchScopeLabel(state.branchId))} | Date: ${escapeHtml(summary.date)} | Master dashboard for daily sell billing.
+      </p>
+      <p class="page-note">
+        Billing Progress uses only Billing records. Profit here is billing-only profit from paid income (no stock/cost data is used).
+      </p>
+    </section>
+
+    <section class="kpi-grid">
+      <article class="kpi-card"><p>Total Bills</p><h2>${summary.totals.bills}</h2></article>
+      <article class="kpi-card"><p>Revenue</p><h2>${money(summary.totals.revenue)}</h2></article>
+      <article class="kpi-card"><p>Income</p><h2>${money(summary.totals.income)}</h2></article>
+      <article class="kpi-card"><p>Profit</p><h2>${money(summary.totals.profit)}</h2></article>
+      <article class="kpi-card"><p>Avg Bill Value</p><h2>${money(avgBill)}</h2></article>
+    </section>
+
+    <section class="content-grid">
+      <article class="card">
+        <div class="card-header"><h3>Top Revenue Bill</h3></div>
+        <p><strong>${escapeHtml(topRevenueText)}</strong></p>
+      </article>
+      <article class="card">
+        <div class="card-header"><h3>Top Income Bill</h3></div>
+        <p><strong>${escapeHtml(topIncomeText)}</strong></p>
+      </article>
+      <article class="card">
+        <div class="card-header"><h3>Top Profit Bill</h3></div>
+        <p><strong>${escapeHtml(topProfitText)}</strong></p>
+      </article>
+    </section>
+
+    <section class="card wide section-gap">
+      <div class="card-header"><h3>Payment Method Income / Revenue / Profit</h3></div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>Bills</th>
+              <th>Revenue</th>
+              <th>Income</th>
+              <th>Profit</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${paymentMethodRows}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card wide section-gap">
+      <div class="card-header"><h3>Daily Bills</h3></div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Bill No</th>
+              <th>Branch</th>
+              <th>Customer</th>
+              <th>Method</th>
+              <th>Revenue</th>
+              <th>Income</th>
+              <th>Profit</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${
+              summary.rows.length === 0
+                ? '<tr><td colspan="7" class="empty-state">No customer billing activity found for selected date and scope.</td></tr>'
+                : summary.rows
+                    .map(
+                      (row) => `
+                        <tr>
+                          <td>${escapeHtml(row.invoice_no)}</td>
+                          <td>${escapeHtml(row.branch_name)}</td>
+                          <td>${escapeHtml(row.customer_name)}</td>
+                          <td>${escapeHtml(paymentMethodLabel(row.payment_method))}</td>
+                          <td>${money(row.revenue)}</td>
+                          <td>${money(row.income)}</td>
+                          <td>${money(row.profit)}</td>
                         </tr>
                       `
                     )
@@ -3698,7 +6050,13 @@ function renderDeleteDataPage() {
     DATA.users.filter((user) => user.role !== "master").length
   );
   const dailyEnteredDetailsCount =
-    DATA.daily_prices.length + DATA.daily_stock_entry.length + DATA.hold_stock_entry.length;
+    DATA.daily_prices.length +
+    DATA.daily_stock_entry.length +
+    DATA.hold_stock_entry.length +
+    DATA.shop_orders.length +
+    DATA.customer_bills.length +
+    DATA.app_error_logs.length;
+  const activityLogsCount = Array.isArray(DATA.activity_logs) ? DATA.activity_logs.length : 0;
 
   const categories = [
     {
@@ -3709,6 +6067,10 @@ function renderDeleteDataPage() {
     { key: "daily_prices", label: "Daily Prices", count: DATA.daily_prices.length },
     { key: "daily_stock_entry", label: "Daily Stock Entries", count: DATA.daily_stock_entry.length },
     { key: "hold_stock_entry", label: "Hold Stock Entries", count: DATA.hold_stock_entry.length },
+    { key: "shop_orders", label: "Shop Orders", count: DATA.shop_orders.length },
+    { key: "customer_bills", label: "Customer Bills", count: DATA.customer_bills.length },
+    { key: "app_error_logs", label: "Error Logs", count: DATA.app_error_logs.length },
+    { key: "activity_logs", label: "Activity Logs", count: activityLogsCount },
     {
       key: "branch_fish_settings",
       label: "Branch Fish Settings",
@@ -3716,7 +6078,7 @@ function renderDeleteDataPage() {
     },
     {
       key: "fish_profiles_related",
-      label: "Fish Profiles (+ settings/prices/stock/hold)",
+      label: "Fish Profiles (+ settings/prices/stock/hold/orders/bills)",
       count: DATA.fish_profiles.length
     },
     { key: "users_non_master", label: "Users (non-master only)", count: userDeleteCount },
@@ -3785,6 +6147,12 @@ function renderActivePage() {
       return renderYDailyPricesPage();
     case "hold_stock":
       return renderHoldStockPage();
+    case "shop_orders":
+      return renderShopOrdersPage();
+    case "billing":
+      return renderBillingPage();
+    case "billing_progress":
+      return renderBillingProgressPage();
     case "remaining_stock_holds":
       return renderRemainingStockHoldsPage();
     case "morning_opening_stock":
@@ -3795,6 +6163,12 @@ function renderActivePage() {
       return renderDailySummaryPage();
     case "reports":
       return renderReportsPage();
+    case "transfer_suggestions":
+      return renderTransferSuggestionsPage();
+    case "error_logs":
+      return renderErrorLogsPage();
+    case "activity_logs":
+      return renderActivityLogsPage();
     case "monthly_calculations":
       return renderMonthlyCalculationsPage();
     case "about":
@@ -3887,7 +6261,9 @@ async function handleProfilePhotoChange(event) {
       outputType: "image/webp",
       quality: 0.8
     });
-    saveStore();
+    saveStoreWithActivity("PROFILE_PHOTO_UPDATE", "Updated profile photo.", {
+      details: { fileName: file.name, fileType: file.type }
+    });
     renderSessionIdentity();
     if (state.activePage === "settings") {
       renderApp();
@@ -3923,7 +6299,9 @@ async function handleLogoChange(event) {
       quality: 0.84
     });
     applyBranding();
-    saveStore();
+    saveStoreWithActivity("SETTINGS_LOGO_UPDATE", "Updated company logo.", {
+      details: { fileName: file.name, fileType: file.type }
+    });
     if (state.activePage === "settings") {
       renderApp();
     }
@@ -3968,7 +6346,13 @@ function copyYesterdayPrices() {
       copied += 1;
     }
   }
-  saveStore();
+  saveStoreWithActivity(
+    "DAILY_PRICES_COPY_YESTERDAY",
+    `Copied ${copied} daily price row(s) from ${sourceDate}.`,
+    {
+      details: { sourceDate, targetDate: state.date, branchId: state.branchId }
+    }
+  );
   if (copied > 0) {
     alert(`Copied ${copied} price rows from ${sourceDate}.`);
   } else {
@@ -4206,6 +6590,9 @@ function exportBackup() {
   const payload = buildBackupPayloadString();
   const filename = buildBackupFileName("fishops-backup", state.date, state.branchId);
   triggerBackupDownload(payload, filename);
+  saveStoreWithActivity("BACKUP_EXPORT", `Downloaded backup file ${filename}.`, {
+    details: { filename }
+  });
 }
 
 function normalizeImportedBackupPayload(parsed) {
@@ -4242,6 +6629,23 @@ function normalizeImportedBackupPayload(parsed) {
     payloadData.hold_stock_entry === undefined
       ? []
       : normalizeCollection(payloadData.hold_stock_entry, "hold_stock_entry");
+  const importedShopOrderRows =
+    payloadData.shop_orders === undefined
+      ? []
+      : normalizeCollection(payloadData.shop_orders, "shop_orders");
+  const customerBillRows =
+    payloadData.customer_bills === undefined
+      ? importedShopOrderRows.filter((row) => isBillingRow(row))
+      : normalizeCollection(payloadData.customer_bills, "customer_bills");
+  const shopOrderRows = importedShopOrderRows.filter((row) => isShopOrderRow(row));
+  const appErrorRows =
+    payloadData.app_error_logs === undefined
+      ? []
+      : normalizeCollection(payloadData.app_error_logs, "app_error_logs");
+  const activityRows =
+    payloadData.activity_logs === undefined
+      ? []
+      : normalizeCollection(payloadData.activity_logs, "activity_logs");
 
   const defaults = createDefaultStore();
   const settingsSource =
@@ -4255,7 +6659,11 @@ function normalizeImportedBackupPayload(parsed) {
       branch_fish_settings: collections.branch_fish_settings,
       daily_prices: collections.daily_prices,
       daily_stock_entry: collections.daily_stock_entry,
-      hold_stock_entry: holdStockRows
+      hold_stock_entry: holdStockRows,
+      shop_orders: shopOrderRows,
+      customer_bills: customerBillRows,
+      app_error_logs: appErrorRows,
+      activity_logs: activityRows
     },
     settings: {
       ...defaults.settings,
@@ -4294,6 +6702,9 @@ async function importBackupFromFile(file) {
   state.currentUser = currentUser;
   populateBranchSelector();
   renderApp();
+  saveStoreWithActivity("BACKUP_IMPORT", "Imported backup from file.", {
+    details: { fileName: file.name, importedAt: new Date().toISOString() }
+  });
   alert("Backup imported successfully.");
 }
 
@@ -4625,7 +7036,24 @@ function bindUsersPageEvents() {
     return;
   }
 
+  const updateCreateHiddenTabs = () => {
+    const roleInput = document.getElementById("newUserRole");
+    const tabsInput = document.getElementById("newUserHiddenPages");
+    if (!roleInput || !tabsInput) {
+      return;
+    }
+    const role = String(roleInput.value || "user").trim().toLowerCase();
+    const selectedHidden = Array.from(tabsInput.selectedOptions).map((option) => option.value);
+    const nextHidden = normalizeUserHiddenPageIds(role, selectedHidden);
+    tabsInput.innerHTML = renderPageAccessOptions(role, nextHidden);
+    tabsInput.disabled = role === "master";
+  };
+
   const createForm = document.getElementById("userCreateForm");
+  const createRoleInput = document.getElementById("newUserRole");
+  createRoleInput?.addEventListener("change", updateCreateHiddenTabs);
+  updateCreateHiddenTabs();
+
   createForm?.addEventListener("submit", (event) => {
     event.preventDefault();
     const username = document.getElementById("newUserUsername")?.value.trim();
@@ -4633,6 +7061,11 @@ function bindUsersPageEvents() {
     const role = document.getElementById("newUserRole")?.value;
     const branch = document.getElementById("newUserBranch")?.value || null;
     const status = document.getElementById("newUserStatus")?.value || "active";
+    const hiddenPagesInput = document.getElementById("newUserHiddenPages");
+    const selectedHiddenPages = hiddenPagesInput
+      ? Array.from(hiddenPagesInput.selectedOptions).map((option) => option.value)
+      : [];
+    const normalizedHiddenPages = normalizeUserHiddenPageIds(role, selectedHiddenPages);
     const scopedBranch = normalizeUserBranchScope(role, branch);
 
     if (!username || !password || !role) {
@@ -4655,10 +7088,43 @@ function bindUsersPageEvents() {
       role,
       branch_id: scopedBranch,
       status,
-      photo: ""
+      photo: "",
+      hidden_page_ids: normalizedHiddenPages
     });
-    saveStore();
+    saveStoreWithActivity("USER_CREATE", `Created user "${username}".`, {
+      details: {
+        role,
+        branch_id: scopedBranch,
+        status,
+        hidden_tabs: normalizedHiddenPages.length
+      }
+    });
     renderApp();
+  });
+
+  document.querySelectorAll("[id^='user-role-']").forEach((roleInput) => {
+    roleInput.addEventListener("change", () => {
+      const userId = String(roleInput.id || "").replace("user-role-", "");
+      const tabsInput = document.getElementById(`user-tabs-${userId}`);
+      if (!tabsInput) {
+        return;
+      }
+      const role = String(roleInput.value || "user").trim().toLowerCase();
+      const selectedHidden = Array.from(tabsInput.selectedOptions).map((option) => option.value);
+      const nextHidden = normalizeUserHiddenPageIds(role, selectedHidden);
+      tabsInput.innerHTML = renderPageAccessOptions(role, nextHidden);
+      tabsInput.disabled = role === "master";
+      const hint = tabsInput.parentElement?.querySelector(".user-tabs-hint");
+      if (hint) {
+        const rolePages = getRoleVisiblePageIds(role);
+        hint.textContent =
+          role === "master"
+            ? "Master always sees all tabs"
+            : nextHidden.length === 0
+              ? "No hidden tabs"
+              : `${nextHidden.length} tab(s) hidden (${Math.max(0, rolePages.length - nextHidden.length)} visible)`;
+      }
+    });
   });
 
   document.querySelectorAll(".user-save-btn").forEach((button) => {
@@ -4676,6 +7142,11 @@ function bindUsersPageEvents() {
       const branch = document.getElementById(`user-branch-${userId}`)?.value || "";
       const status = document.getElementById(`user-status-${userId}`)?.value || user.status;
       const newPassword = document.getElementById(`user-password-${userId}`)?.value || "";
+      const tabsInput = document.getElementById(`user-tabs-${userId}`);
+      const selectedHiddenPages = tabsInput
+        ? Array.from(tabsInput.selectedOptions).map((option) => option.value)
+        : [];
+      const normalizedHiddenPages = normalizeUserHiddenPageIds(role, selectedHiddenPages);
       const scopedBranch = normalizeUserBranchScope(role, branch);
 
       if (role === "user" && !scopedBranch) {
@@ -4686,6 +7157,7 @@ function bindUsersPageEvents() {
       user.role = role;
       user.branch_id = scopedBranch;
       user.status = status;
+      user.hidden_page_ids = normalizedHiddenPages;
       if (newPassword.trim()) {
         user.password = newPassword.trim();
       }
@@ -4694,14 +7166,30 @@ function bindUsersPageEvents() {
         state.currentUser = user;
         if (user.status !== "active") {
           alert("Current session user is now inactive. Please login again.");
-          saveStore();
+          saveStoreWithActivity("USER_UPDATE", `Updated user "${user.username}".`, {
+            details: {
+              role,
+              branch_id: scopedBranch,
+              status,
+              hidden_tabs: normalizedHiddenPages.length,
+              password_changed: Boolean(newPassword.trim())
+            }
+          });
           endSession();
           return;
         }
         populateBranchSelector();
       }
 
-      saveStore();
+      saveStoreWithActivity("USER_UPDATE", `Updated user "${user.username}".`, {
+        details: {
+          role,
+          branch_id: scopedBranch,
+          status,
+          hidden_tabs: normalizedHiddenPages.length,
+          password_changed: Boolean(newPassword.trim())
+        }
+      });
       renderApp();
     });
   });
@@ -4731,7 +7219,9 @@ function bindUsersPageEvents() {
       }
 
       DATA.users = DATA.users.filter((entry) => entry.id !== userId);
-      saveStore();
+      saveStoreWithActivity("USER_DELETE", `Deleted user "${user.username}".`, {
+        details: { role: user.role, branch_id: user.branch_id }
+      });
 
       if (state.currentUser?.id === userId) {
         endSession();
@@ -4782,7 +7272,9 @@ function bindFishPageEvents() {
       unit,
       status
     });
-    saveStore();
+    saveStoreWithActivity("FISH_CREATE", `Added fish "${name}" (${fishCode}).`, {
+      details: { fish_code: fishCode, category, unit, status }
+    });
     renderApp();
   });
 
@@ -4810,7 +7302,9 @@ function bindFishPageEvents() {
       fish.category = category;
       fish.unit = unit;
       fish.status = status;
-      saveStore();
+      saveStoreWithActivity("FISH_UPDATE", `Updated fish "${name}" (${fish.fish_code}).`, {
+        details: { fish_id: fish.id, category, unit, status }
+      });
       renderApp();
     });
   });
@@ -4823,7 +7317,9 @@ function bindFishPageEvents() {
         return;
       }
       fish.status = fish.status === "active" ? "inactive" : "active";
-      saveStore();
+      saveStoreWithActivity("FISH_STATUS_TOGGLE", `Set fish "${fish.name}" to ${fish.status}.`, {
+        details: { fish_id: fish.id, fish_code: fish.fish_code, status: fish.status }
+      });
       renderApp();
     });
   });
@@ -4851,7 +7347,11 @@ function bindFishPageEvents() {
       DATA.daily_prices = DATA.daily_prices.filter((item) => item.fish_id !== fishId);
       DATA.daily_stock_entry = DATA.daily_stock_entry.filter((item) => item.fish_id !== fishId);
       DATA.hold_stock_entry = DATA.hold_stock_entry.filter((item) => item.fish_id !== fishId);
-      saveStore();
+      saveStoreWithActivity(
+        "FISH_DELETE",
+        `Deleted fish "${fish.name}" (${fish.fish_code}) and related records.`,
+        { details: { fish_id: fish.id } }
+      );
       renderApp();
     });
   });
@@ -4890,7 +7390,15 @@ function bindBranchSettingsEvents() {
     }
 
     upsertBranchSetting(state.branchId, fishId, minStock, targetStock, isActive);
-    saveStore();
+    saveStoreWithActivity("BRANCH_SETTING_UPSERT", `Saved branch fish setting for ${fishDisplayLabel(fish)}.`, {
+      details: {
+        branch_id: state.branchId,
+        fish_id: fishId,
+        min_stock: minStock,
+        target_stock: targetStock,
+        is_active: isActive
+      }
+    });
     renderApp();
   });
 
@@ -4919,7 +7427,16 @@ function bindBranchSettingsEvents() {
       setting.min_stock = minStock;
       setting.target_stock = targetStock;
       setting.is_active = isActive;
-      saveStore();
+      saveStoreWithActivity("BRANCH_SETTING_UPDATE", "Updated branch fish setting.", {
+        details: {
+          setting_id: setting.id,
+          branch_id: setting.branch_id,
+          fish_id: setting.fish_id,
+          min_stock: minStock,
+          target_stock: targetStock,
+          is_active: isActive
+        }
+      });
       renderApp();
     });
   });
@@ -4930,8 +7447,15 @@ function bindBranchSettingsEvents() {
       if (!settingId) {
         return;
       }
+      const setting = DATA.branch_fish_settings.find((item) => item.id === settingId);
       DATA.branch_fish_settings = DATA.branch_fish_settings.filter((item) => item.id !== settingId);
-      saveStore();
+      saveStoreWithActivity("BRANCH_SETTING_DELETE", "Deleted branch fish setting.", {
+        details: {
+          setting_id: settingId,
+          branch_id: setting?.branch_id || "",
+          fish_id: setting?.fish_id || ""
+        }
+      });
       renderApp();
     });
   });
@@ -4971,7 +7495,16 @@ function bindDailyPricesEvents() {
       auto_price_from: "",
       price_source: "morning"
     });
-    saveStore();
+    saveStoreWithActivity("DAILY_PRICE_UPSERT", `Saved daily price for ${fishDisplayLabel(fish)}.`, {
+      details: {
+        branch_id: state.branchId,
+        date: state.date,
+        fish_id: fishId,
+        sell_price_per_unit: sell,
+        cost_price_per_unit: cost,
+        source: "morning"
+      }
+    });
     renderApp();
   });
 
@@ -4991,7 +7524,17 @@ function bindDailyPricesEvents() {
       price.cost_price_per_unit = cost;
       price.auto_price_from = "";
       price.price_source = "morning";
-      saveStore();
+      const fish = findFishById(price.fish_id);
+      saveStoreWithActivity("DAILY_PRICE_UPDATE", `Updated daily price for ${fishDisplayLabel(fish, price.fish_id)}.`, {
+        details: {
+          price_id: price.id,
+          branch_id: price.branch_id,
+          date: price.date,
+          fish_id: price.fish_id,
+          sell_price_per_unit: sell,
+          cost_price_per_unit: cost
+        }
+      });
       renderApp();
     });
   });
@@ -5002,8 +7545,16 @@ function bindDailyPricesEvents() {
       if (!priceId) {
         return;
       }
+      const price = DATA.daily_prices.find((item) => item.id === priceId);
       DATA.daily_prices = DATA.daily_prices.filter((item) => item.id !== priceId);
-      saveStore();
+      saveStoreWithActivity("DAILY_PRICE_DELETE", "Deleted daily price entry.", {
+        details: {
+          price_id: priceId,
+          branch_id: price?.branch_id || "",
+          date: price?.date || "",
+          fish_id: price?.fish_id || ""
+        }
+      });
       renderApp();
     });
   });
@@ -5081,7 +7632,17 @@ function bindHoldStockEvents() {
     };
 
     DATA.hold_stock_entry.push(holdEntry);
-    saveStore();
+    saveStoreWithActivity("HOLD_STOCK_ADD", `Added hold stock for ${fishDisplayLabel(fish)}.`, {
+      details: {
+        hold_id: holdEntry.id,
+        branch_id: holdEntry.branch_id,
+        date: holdEntry.date,
+        fish_id: holdEntry.fish_id,
+        fish_count: holdEntry.fish_count,
+        full_qty_kg: holdEntry.full_qty_kg,
+        total_cost_lkr: holdEntry.total_cost_lkr
+      }
+    });
     renderApp();
     alert("Hold stock added.");
   });
@@ -5127,7 +7688,16 @@ function bindHoldStockEvents() {
       entry.sell_price_per_kg = metrics.sellPricePerKgLkr;
       entry.status = "cut";
       entry.cut_at = new Date().toISOString();
-      saveStore();
+      saveStoreWithActivity("HOLD_STOCK_CUT", `Cut hold stock entry ${entry.id}.`, {
+        details: {
+          hold_id: entry.id,
+          branch_id: entry.branch_id,
+          fish_id: entry.fish_id,
+          usable_qty_kg: entry.usable_qty_kg,
+          waste_qty_kg: entry.waste_qty_kg,
+          sell_price_per_kg: entry.sell_price_per_kg
+        }
+      });
       renderApp();
       alert("Cut completed. You can move this stock now.");
     });
@@ -5157,7 +7727,14 @@ function bindHoldStockEvents() {
         alert("Unable to move this hold stock entry.");
         return;
       }
-      saveStore();
+      saveStoreWithActivity("HOLD_STOCK_MOVE", `Moved hold stock entry ${entry.id} to operational stock.`, {
+        details: {
+          hold_id: entry.id,
+          target_date: moved,
+          branch_id: entry.branch_id,
+          fish_id: entry.fish_id
+        }
+      });
       renderApp();
       alert(`Hold stock moved to current stock for ${moved}. Closing/waste and daily price updated.`);
     });
@@ -5176,8 +7753,664 @@ function bindHoldStockEvents() {
       if (!ok) {
         return;
       }
+      const entry = DATA.hold_stock_entry.find((row) => row.id === holdId);
       DATA.hold_stock_entry = DATA.hold_stock_entry.filter((row) => row.id !== holdId);
-      saveStore();
+      saveStoreWithActivity("HOLD_STOCK_DELETE", `Deleted hold stock entry ${holdId}.`, {
+        details: {
+          hold_id: holdId,
+          branch_id: entry?.branch_id || "",
+          fish_id: entry?.fish_id || "",
+          date: entry?.date || ""
+        }
+      });
+      renderApp();
+    });
+  });
+}
+
+function bindShopOrdersEvents() {
+  bindFishQuickSearch(
+    "shopOrdersSearchInput",
+    "shopOrdersTableBody",
+    "shopOrdersSearchEmptyRow",
+    "shopOrders"
+  );
+
+  if (isWriteRestricted()) {
+    return;
+  }
+
+  const canSelectBranch = canSelectAllBranches(state.currentUser);
+  if (!canSelectBranch) {
+    state.shopOrderDraftBranchId = state.branchId;
+  }
+
+  const createForm = document.getElementById("shopOrderCreateForm");
+  const branchInput = document.getElementById("shopOrderBranchInput");
+  const shopNameInput = document.getElementById("shopOrderShopNameInput");
+  const invoiceInput = document.getElementById("shopOrderInvoiceInput");
+  const paymentMethodInput = document.getElementById("shopOrderPaymentMethodInput");
+  const paymentTermsInput = document.getElementById("shopOrderPaymentTermsInput");
+  const amountPaidInput = document.getElementById("shopOrderAmountPaidInput");
+  const notesInput = document.getElementById("shopOrderNotesInput");
+  const requestsInput = document.getElementById("shopOrderRequestsInput");
+  const fishInput = document.getElementById("shopOrderFishInput");
+  const qtyInput = document.getElementById("shopOrderQtyInput");
+  const specialPriceInput = document.getElementById("shopOrderSpecialPriceInput");
+  const addLineBtn = document.getElementById("addShopOrderLineBtn");
+
+  branchInput?.addEventListener("change", () => {
+    state.shopOrderDraftBranchId = String(branchInput.value || "").trim();
+  });
+
+  addLineBtn?.addEventListener("click", () => {
+    if (!ensureWriteAllowed()) {
+      return;
+    }
+
+    const fishQuery = String(fishInput?.value || "").trim();
+    const fish = findFishByCodeOrName(fishQuery);
+    if (!fish) {
+      alert("Fish code/name not found.");
+      return;
+    }
+    if (fish.status !== "active") {
+      alert("Selected fish is inactive.");
+      return;
+    }
+
+    const line = createShopOrderItemFromInput(fish, qtyInput?.value, specialPriceInput?.value);
+    if (!line) {
+      alert("Fish qty kg and special price must be greater than zero.");
+      return;
+    }
+
+    state.shopOrderDraftItems.push(line);
+    if (fishInput) {
+      fishInput.value = "";
+    }
+    if (qtyInput) {
+      qtyInput.value = "";
+    }
+    if (specialPriceInput) {
+      specialPriceInput.value = "";
+    }
+    renderApp();
+  });
+
+  document.querySelectorAll(".shop-order-line-remove-btn").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (!ensureWriteAllowed()) {
+        return;
+      }
+      const index = Number(button.getAttribute("data-item-index"));
+      if (!Number.isInteger(index) || index < 0 || index >= state.shopOrderDraftItems.length) {
+        return;
+      }
+      state.shopOrderDraftItems.splice(index, 1);
+      renderApp();
+    });
+  });
+
+  createForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!ensureWriteAllowed()) {
+      return;
+    }
+
+    const branchId = canSelectBranch
+      ? String(branchInput?.value || state.shopOrderDraftBranchId || "").trim()
+      : state.branchId;
+    if (!branchId) {
+      alert("Branch is required.");
+      return;
+    }
+    if (!getAccessibleBranches(state.currentUser).some((branch) => branch.id === branchId)) {
+      alert("Selected branch is not accessible.");
+      return;
+    }
+
+    const shopName = String(shopNameInput?.value || "").trim();
+    if (!shopName) {
+      alert("Shop name is required.");
+      return;
+    }
+    if (!state.shopOrderDraftItems.length) {
+      alert("Add at least one fish line before creating order.");
+      return;
+    }
+
+    const invoiceNoRaw = String(invoiceInput?.value || "").trim();
+    const invoiceNo = invoiceNoRaw || nextShopInvoiceNo(state.date, branchId);
+    if (
+      DATA.shop_orders.some(
+        (row) => isShopOrderRow(row) && String(row.invoice_no || "").toLowerCase() === invoiceNo.toLowerCase()
+      )
+    ) {
+      alert(`Invoice "${invoiceNo}" already exists.`);
+      return;
+    }
+
+    const order = {
+      id: makeId("ORD"),
+      date: state.date,
+      order_channel: ORDER_CHANNEL_SHOP,
+      branch_id: branchId,
+      shop_name: shopName,
+      invoice_no: invoiceNo,
+      currency: state.settings.currency || "LKR",
+      payment_method: normalizePaymentMethod(paymentMethodInput?.value),
+      payment_terms: normalizePaymentTerms(paymentTermsInput?.value),
+      amount_paid: Math.max(0, round2(numberOr(amountPaidInput?.value, 0))),
+      notes: String(notesInput?.value || "").trim(),
+      shop_requests: String(requestsInput?.value || "").trim(),
+      items: state.shopOrderDraftItems.map((item) => ({
+        id: makeId("ITM"),
+        fish_id: item.fish_id,
+        fish_code: item.fish_code,
+        fish_name: item.fish_name,
+        qty_kg: Math.max(0, round2(numberOr(item.qty_kg, 0))),
+        special_price_per_kg: Math.max(0, round2(numberOr(item.special_price_per_kg, 0))),
+        line_total: round2(numberOr(item.line_total, 0))
+      })),
+      total_amount: 0,
+      balance_due: 0,
+      payment_status: "UNPAID",
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+
+    rebuildShopOrderFinancials(order);
+    DATA.shop_orders.push(order);
+    state.shopOrderDraftBranchId = branchId;
+    state.shopOrderDraftItems = [];
+    saveStoreWithActivity("SHOP_ORDER_CREATE", `Created shop order "${invoiceNo}" for ${shopName}.`, {
+      details: {
+        order_id: order.id,
+        invoice_no: invoiceNo,
+        branch_id: branchId,
+        item_count: order.items.length,
+        total_amount: order.total_amount
+      }
+    });
+    renderApp();
+    alert(`Order created. Invoice: ${invoiceNo}`);
+  });
+
+  document.querySelectorAll(".shop-order-save-btn").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (!ensureWriteAllowed()) {
+        return;
+      }
+      const orderId = button.getAttribute("data-order-id");
+      const order = orderId ? DATA.shop_orders.find((row) => row.id === orderId) : null;
+      if (!order || !isShopOrderRow(order)) {
+        return;
+      }
+
+      order.amount_paid = Math.max(
+        0,
+        round2(numberOr(document.getElementById(`shop-order-paid-${order.id}`)?.value, order.amount_paid))
+      );
+      order.payment_method = normalizePaymentMethod(
+        document.getElementById(`shop-order-method-${order.id}`)?.value
+      );
+      order.payment_terms = normalizePaymentTerms(
+        document.getElementById(`shop-order-terms-${order.id}`)?.value
+      );
+      order.notes = String(document.getElementById(`shop-order-notes-${order.id}`)?.value || "").trim();
+      order.shop_requests = String(
+        document.getElementById(`shop-order-requests-${order.id}`)?.value || ""
+      ).trim();
+      rebuildShopOrderFinancials(order);
+      saveStoreWithActivity("SHOP_ORDER_UPDATE", `Updated shop order "${order.invoice_no || order.id}".`, {
+        details: {
+          order_id: order.id,
+          invoice_no: order.invoice_no,
+          amount_paid: order.amount_paid,
+          payment_status: order.payment_status
+        }
+      });
+      renderApp();
+    });
+  });
+
+  document.querySelectorAll(".shop-order-paid-btn").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (!ensureWriteAllowed()) {
+        return;
+      }
+      const orderId = button.getAttribute("data-order-id");
+      const order = orderId ? DATA.shop_orders.find((row) => row.id === orderId) : null;
+      if (!order || !isShopOrderRow(order)) {
+        return;
+      }
+      order.amount_paid = round2(numberOr(order.total_amount, 0));
+      rebuildShopOrderFinancials(order);
+      saveStoreWithActivity("SHOP_ORDER_MARK_PAID", `Marked shop order "${order.invoice_no || order.id}" as paid.`, {
+        details: {
+          order_id: order.id,
+          invoice_no: order.invoice_no,
+          amount_paid: order.amount_paid
+        }
+      });
+      renderApp();
+    });
+  });
+
+  document.querySelectorAll(".shop-order-invoice-btn").forEach((button) => {
+    button.addEventListener("click", () => {
+      const orderId = button.getAttribute("data-order-id");
+      const order = orderId ? DATA.shop_orders.find((row) => row.id === orderId) : null;
+      if (!order || !isShopOrderRow(order)) {
+        return;
+      }
+      downloadShopOrderInvoice(order);
+    });
+  });
+
+  document.querySelectorAll(".shop-order-delete-btn").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (!ensureWriteAllowed()) {
+        return;
+      }
+      const orderId = button.getAttribute("data-order-id");
+      if (!orderId) {
+        return;
+      }
+      const order = DATA.shop_orders.find((row) => row.id === orderId);
+      if (!order || !isShopOrderRow(order)) {
+        return;
+      }
+      const ok = window.confirm(
+        `Delete shop order "${order.invoice_no || order.id}" for ${order.shop_name || "shop"}?`
+      );
+      if (!ok) {
+        return;
+      }
+      DATA.shop_orders = DATA.shop_orders.filter((row) => row.id !== orderId);
+      saveStoreWithActivity("SHOP_ORDER_DELETE", `Deleted shop order "${order.invoice_no || order.id}".`, {
+        details: {
+          order_id: order.id,
+          invoice_no: order.invoice_no,
+          branch_id: order.branch_id
+        }
+      });
+      renderApp();
+    });
+  });
+}
+
+function bindBillingEvents() {
+  if (isWriteRestricted()) {
+    return;
+  }
+
+  const canSelectBranch = canSelectAllBranches(state.currentUser);
+  if (!canSelectBranch) {
+    state.billingDraftBranchId = state.branchId;
+  }
+
+  const createForm = document.getElementById("billingCreateForm");
+  const branchInput = document.getElementById("billingBranchInput");
+  const customerInput = document.getElementById("billingCustomerNameInput");
+  const invoiceInput = document.getElementById("billingInvoiceInput");
+  const paymentMethodInput = document.getElementById("billingPaymentMethodInput");
+  const paymentTermsInput = document.getElementById("billingPaymentTermsInput");
+  const amountPaidInput = document.getElementById("billingAmountPaidInput");
+  const notesInput = document.getElementById("billingNotesInput");
+  const requestsInput = document.getElementById("billingRequestsInput");
+  const fishSearchInput = document.getElementById("billingFishSearchInput");
+  const clearDraftBtn = document.getElementById("billingClearDraftBtn");
+
+  const updateDraftBalancePreview = () => {
+    const total = round2(
+      state.billingDraftItems.reduce((sum, item) => sum + numberOr(item.line_total, 0), 0)
+    );
+    const paid = Math.max(0, round2(numberOr(state.billingDraftAmountPaid, 0)));
+    const balance = round2(Math.max(0, total - paid));
+    const totalLabel = document.getElementById("billingDraftTotalText");
+    const balanceLabel = document.getElementById("billingDraftBalanceText");
+    if (totalLabel) {
+      totalLabel.textContent = money(total);
+    }
+    if (balanceLabel) {
+      balanceLabel.textContent = money(balance);
+    }
+  };
+
+  branchInput?.addEventListener("change", () => {
+    state.billingDraftBranchId = String(branchInput.value || "").trim();
+    renderApp();
+  });
+
+  fishSearchInput?.addEventListener("input", () => {
+    state.billingDraftSearch = String(fishSearchInput.value || "");
+    renderApp();
+  });
+
+  document.querySelectorAll(".billing-pos-category-btn").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.billingDraftCategory = String(button.getAttribute("data-category") || BILLING_CATEGORY_ALL);
+      renderApp();
+    });
+  });
+
+  customerInput?.addEventListener("input", () => {
+    state.billingDraftCustomerName = String(customerInput.value || "");
+  });
+  invoiceInput?.addEventListener("input", () => {
+    state.billingDraftInvoiceNo = String(invoiceInput.value || "");
+  });
+  paymentMethodInput?.addEventListener("change", () => {
+    state.billingDraftPaymentMethod = normalizePaymentMethod(paymentMethodInput.value);
+  });
+  paymentTermsInput?.addEventListener("change", () => {
+    state.billingDraftPaymentTerms = normalizePaymentTerms(paymentTermsInput.value);
+  });
+  notesInput?.addEventListener("input", () => {
+    state.billingDraftNotes = String(notesInput.value || "");
+  });
+  requestsInput?.addEventListener("input", () => {
+    state.billingDraftRequests = String(requestsInput.value || "");
+  });
+  amountPaidInput?.addEventListener("input", () => {
+    state.billingDraftAmountPaid = Math.max(0, round2(numberOr(amountPaidInput.value, 0)));
+    updateDraftBalancePreview();
+  });
+
+  document.querySelectorAll(".billing-pos-product-btn").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (!ensureWriteAllowed()) {
+        return;
+      }
+
+      const fishId = String(button.getAttribute("data-fish-id") || "");
+      const fish = fishId ? findFishById(fishId) : null;
+      if (!fish) {
+        return;
+      }
+      if (fish.status !== "active") {
+        alert("Selected fish is inactive.");
+        return;
+      }
+
+      const defaultPrice = Math.max(0, round2(numberOr(button.getAttribute("data-default-price"), 0)));
+      if (defaultPrice <= 0) {
+        alert("Daily price is missing for this fish. Set daily price first.");
+        return;
+      }
+      const availableKg = Math.max(0, round2(numberOr(button.getAttribute("data-stock-kg"), 0)));
+      if (availableKg <= 0) {
+        alert("Stock not available for this fish.");
+        return;
+      }
+
+      const existing = state.billingDraftItems.find((item) => item.fish_id === fish.id);
+      if (existing) {
+        const currentQty = Math.max(0.01, round2(numberOr(existing.qty_kg, 0)));
+        const remainingQty = round2(availableKg - currentQty);
+        if (remainingQty <= 0) {
+          alert(`Stock limit reached for ${fishDisplayLabel(fish)}. Available: ${availableKg.toFixed(2)} kg.`);
+          return;
+        }
+        existing.qty_kg = round2(currentQty + Math.min(1, remainingQty));
+        existing.line_total = round2(existing.qty_kg * Math.max(0.01, numberOr(existing.special_price_per_kg, 0)));
+      } else {
+        const line = createShopOrderItemFromInput(fish, Math.min(1, availableKg), defaultPrice);
+        if (!line) {
+          return;
+        }
+        state.billingDraftItems.push(line);
+      }
+      renderApp();
+    });
+  });
+
+  document.querySelectorAll(".billing-line-remove-btn").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (!ensureWriteAllowed()) {
+        return;
+      }
+      const index = Number(button.getAttribute("data-item-index"));
+      if (!Number.isInteger(index) || index < 0 || index >= state.billingDraftItems.length) {
+        return;
+      }
+      state.billingDraftItems.splice(index, 1);
+      renderApp();
+    });
+  });
+
+  document.querySelectorAll(".billing-line-qty-input").forEach((input) => {
+    input.addEventListener("change", () => {
+      const index = Number(input.getAttribute("data-item-index"));
+      if (!Number.isInteger(index) || index < 0 || index >= state.billingDraftItems.length) {
+        return;
+      }
+      const item = state.billingDraftItems[index];
+      const nextQty = Math.max(0, round2(numberOr(input.value, item.qty_kg)));
+      const availableKg = getBillingAvailableStockKg(state.billingDraftBranchId, state.date, item.fish_id);
+      const boundedQty = availableKg > 0 ? Math.min(nextQty, availableKg) : 0;
+      if (boundedQty <= 0) {
+        state.billingDraftItems.splice(index, 1);
+      } else {
+        if (boundedQty < nextQty) {
+          alert(`Only ${availableKg.toFixed(2)} kg available for ${item.fish_name}.`);
+        }
+        item.qty_kg = boundedQty;
+        item.line_total = round2(item.qty_kg * Math.max(0.01, round2(numberOr(item.special_price_per_kg, 0))));
+      }
+      renderApp();
+    });
+  });
+
+  document.querySelectorAll(".billing-line-price-input").forEach((input) => {
+    input.addEventListener("change", () => {
+      const index = Number(input.getAttribute("data-item-index"));
+      if (!Number.isInteger(index) || index < 0 || index >= state.billingDraftItems.length) {
+        return;
+      }
+      const item = state.billingDraftItems[index];
+      const nextPrice = Math.max(0, round2(numberOr(input.value, item.special_price_per_kg)));
+      if (nextPrice <= 0) {
+        alert("Price per kg must be greater than zero.");
+        input.value = String(item.special_price_per_kg);
+        return;
+      }
+      item.special_price_per_kg = nextPrice;
+      item.line_total = round2(Math.max(0.01, round2(numberOr(item.qty_kg, 0))) * item.special_price_per_kg);
+      renderApp();
+    });
+  });
+
+  clearDraftBtn?.addEventListener("click", () => {
+    state.billingDraftItems = [];
+    renderApp();
+  });
+
+  createForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!ensureWriteAllowed()) {
+      return;
+    }
+
+    const branchId = canSelectBranch
+      ? String(branchInput?.value || state.billingDraftBranchId || "").trim()
+      : state.branchId;
+    if (!branchId) {
+      alert("Branch is required.");
+      return;
+    }
+    if (!getAccessibleBranches(state.currentUser).some((branch) => branch.id === branchId)) {
+      alert("Selected branch is not accessible.");
+      return;
+    }
+
+    const customerNameRaw = String(state.billingDraftCustomerName || customerInput?.value || "").trim();
+    const customerName = customerNameRaw || nextBillingCustomerId(state.date, branchId);
+    if (!state.billingDraftItems.length) {
+      alert("Add at least one fish line before creating bill.");
+      return;
+    }
+    for (const item of state.billingDraftItems) {
+      const availableKg = getBillingAvailableStockKg(branchId, state.date, item.fish_id);
+      const requestedKg = Math.max(0, round2(numberOr(item.qty_kg, 0)));
+      if (availableKg <= 0) {
+        alert(`Stock not available for ${item.fish_name}. Update stock and try again.`);
+        return;
+      }
+      if (requestedKg > availableKg) {
+        alert(`${item.fish_name} exceeds available stock (${availableKg.toFixed(2)} kg).`);
+        return;
+      }
+    }
+
+    const invoiceNoRaw = String(state.billingDraftInvoiceNo || invoiceInput?.value || "").trim();
+    const invoiceNo = invoiceNoRaw || nextCustomerBillNo(state.date, branchId);
+    if (DATA.customer_bills.some((row) => String(row.invoice_no || "").toLowerCase() === invoiceNo.toLowerCase())) {
+      alert(`Bill no "${invoiceNo}" already exists.`);
+      return;
+    }
+
+    const bill = {
+      id: makeId("ORD"),
+      date: state.date,
+      order_channel: ORDER_CHANNEL_BILLING,
+      branch_id: branchId,
+      shop_name: customerName,
+      invoice_no: invoiceNo,
+      currency: state.settings.currency || "LKR",
+      payment_method: normalizePaymentMethod(state.billingDraftPaymentMethod || paymentMethodInput?.value),
+      payment_terms: normalizePaymentTerms(state.billingDraftPaymentTerms || paymentTermsInput?.value),
+      amount_paid: Math.max(0, round2(numberOr(state.billingDraftAmountPaid, amountPaidInput?.value))),
+      notes: String(state.billingDraftNotes || notesInput?.value || "").trim(),
+      shop_requests: String(state.billingDraftRequests || requestsInput?.value || "").trim(),
+      items: state.billingDraftItems.map((item) => ({
+        id: makeId("ITM"),
+        fish_id: item.fish_id,
+        fish_code: item.fish_code,
+        fish_name: item.fish_name,
+        qty_kg: Math.max(0, round2(numberOr(item.qty_kg, 0))),
+        special_price_per_kg: Math.max(0, round2(numberOr(item.special_price_per_kg, 0))),
+        line_total: round2(numberOr(item.line_total, 0))
+      })),
+      total_amount: 0,
+      balance_due: 0,
+      payment_status: "UNPAID",
+      stock_applied: false,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+
+    rebuildShopOrderFinancials(bill);
+    const stockResult = applyBillingStockUpdate(bill, "decrease");
+    if (!stockResult.ok) {
+      alert(stockResult.message || "Unable to update stock for this bill.");
+      return;
+    }
+    bill.stock_applied = true;
+    DATA.customer_bills.push(bill);
+    state.billingDraftBranchId = branchId;
+    state.billingDraftItems = [];
+    state.billingDraftCustomerName = "";
+    state.billingDraftInvoiceNo = "";
+    state.billingDraftAmountPaid = 0;
+    state.billingDraftNotes = "";
+    state.billingDraftRequests = "";
+    saveStoreWithActivity("CUSTOMER_BILL_CREATE", `Created customer bill "${invoiceNo}" for ${customerName}.`, {
+      details: {
+        order_id: bill.id,
+        invoice_no: invoiceNo,
+        branch_id: branchId,
+        item_count: bill.items.length,
+        total_amount: bill.total_amount,
+        stock_updated: true
+      }
+    });
+    renderApp();
+    alert(`Bill created. Bill no: ${invoiceNo}. Use Download button in Today Bills.`);
+  });
+
+  document.querySelectorAll(".billing-recent-invoice-btn").forEach((button) => {
+    button.addEventListener("click", () => {
+      const orderId = button.getAttribute("data-order-id");
+      const bill = orderId ? DATA.customer_bills.find((row) => row.id === orderId) : null;
+      if (!bill) {
+        return;
+      }
+      downloadCustomerBillInvoice(bill);
+    });
+  });
+
+  document.querySelectorAll(".billing-recent-details-btn").forEach((button) => {
+    button.addEventListener("click", () => {
+      const orderId = String(button.getAttribute("data-order-id") || "");
+      if (!orderId) {
+        return;
+      }
+      state.billingRecentDetailsId = state.billingRecentDetailsId === orderId ? "" : orderId;
+      renderApp();
+    });
+  });
+
+  document.querySelectorAll(".billing-recent-paid-btn").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (!ensureWriteAllowed()) {
+        return;
+      }
+      const orderId = button.getAttribute("data-order-id");
+      const bill = orderId ? DATA.customer_bills.find((row) => row.id === orderId) : null;
+      if (!bill) {
+        return;
+      }
+      bill.amount_paid = round2(numberOr(bill.total_amount, 0));
+      rebuildShopOrderFinancials(bill);
+      saveStoreWithActivity("CUSTOMER_BILL_MARK_PAID", `Marked customer bill "${bill.invoice_no || bill.id}" as paid.`, {
+        details: {
+          order_id: bill.id,
+          invoice_no: bill.invoice_no,
+          amount_paid: bill.amount_paid
+        }
+      });
+      renderApp();
+    });
+  });
+
+  document.querySelectorAll(".billing-recent-delete-btn").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (!ensureWriteAllowed()) {
+        return;
+      }
+      const orderId = button.getAttribute("data-order-id");
+      if (!orderId) {
+        return;
+      }
+      const bill = DATA.customer_bills.find((row) => row.id === orderId);
+      if (!bill) {
+        return;
+      }
+      const ok = window.confirm(
+        `Delete customer bill "${bill.invoice_no || bill.id}" for ${bill.shop_name || "customer"}?`
+      );
+      if (!ok) {
+        return;
+      }
+      if (Boolean(bill.stock_applied)) {
+        const stockRestore = applyBillingStockUpdate(bill, "increase");
+        if (!stockRestore.ok) {
+          alert(stockRestore.message || "Unable to restore stock for this bill.");
+          return;
+        }
+      }
+      DATA.customer_bills = DATA.customer_bills.filter((row) => row.id !== orderId);
+      saveStoreWithActivity("CUSTOMER_BILL_DELETE", `Deleted customer bill "${bill.invoice_no || bill.id}".`, {
+        details: {
+          order_id: bill.id,
+          invoice_no: bill.invoice_no,
+          branch_id: bill.branch_id,
+          stock_restored: Boolean(bill.stock_applied)
+        }
+      });
       renderApp();
     });
   });
@@ -5217,11 +8450,13 @@ function bindOpeningEvents() {
       return;
     }
     const rows = form.querySelectorAll("tbody tr[data-fish-id]");
+    let updatedRows = 0;
     for (const row of rows) {
       const fishId = row.getAttribute("data-fish-id");
       if (!fishId) {
         continue;
       }
+      updatedRows += 1;
       const openingQty = numberOr(row.querySelector(".opening-input")?.value, 0);
       const purchaseQty = numberOr(row.querySelector(".purchase-input")?.value, 0);
       const existingEntry = getStockEntry(state.branchId, state.date, fishId);
@@ -5235,7 +8470,13 @@ function bindOpeningEvents() {
         auto_opening_from: keepAutoSource ? existingAutoSource : ""
       });
     }
-    saveStore();
+    saveStoreWithActivity("OPENING_STOCK_SAVE", "Saved opening stock.", {
+      details: {
+        branch_id: state.branchId,
+        date: state.date,
+        rows_updated: updatedRows
+      }
+    });
     alert("Opening stock saved.");
     renderApp();
   });
@@ -5271,7 +8512,14 @@ function bindClosingEvents() {
       });
     }
     const carry = autoCarryClosingToNextDay(state.branchId, state.date);
-    const persisted = saveStore();
+    const persisted = saveStoreWithActivity("CLOSING_STOCK_SAVE", "Saved closing stock.", {
+      details: {
+        branch_id: state.branchId,
+        date: state.date,
+        carried_items: carry.movedCount,
+        carry_to_date: carry.nextDate
+      }
+    });
     if (!persisted) {
       renderApp();
       return;
@@ -5284,6 +8532,9 @@ function bindClosingEvents() {
     }
     if (backupResult.message) {
       message = `${message} ${backupResult.message}`;
+      saveStoreWithActivity("AUTO_BACKUP_AFTER_CLOSING", backupResult.message, {
+        details: { branch_id: state.branchId, date: state.date }
+      });
     }
     alert(message);
     renderApp();
@@ -5301,6 +8552,77 @@ function bindReportsEvents() {
   orderBtn?.addEventListener("click", downloadTomorrowOrderPdf);
 }
 
+function bindTransferSuggestionsEvents() {
+  bindFishQuickSearch(
+    "transferSuggestionsSearchInput",
+    "transferSuggestionsTableBody",
+    "transferSuggestionsSearchEmptyRow",
+    "transferSuggestions"
+  );
+}
+
+function bindErrorLogsEvents() {
+  bindFishQuickSearch(
+    "errorLogsSearchInput",
+    "errorLogsTableBody",
+    "errorLogsSearchEmptyRow",
+    "errorLogs"
+  );
+
+  const downloadBtn = document.getElementById("downloadErrorLogsBtn");
+  const clearBtn = document.getElementById("clearErrorLogsBtn");
+
+  downloadBtn?.addEventListener("click", () => {
+    const payload = JSON.stringify(DATA.app_error_logs || [], null, 2);
+    const filename = `fishops-error-logs-${isoDateToday()}.json`;
+    triggerBackupDownload(payload, filename);
+  });
+
+  clearBtn?.addEventListener("click", () => {
+    if (state.currentUser?.role !== "master") {
+      return;
+    }
+    const ok = window.confirm("Clear all captured error logs?");
+    if (!ok) {
+      return;
+    }
+    DATA.app_error_logs = [];
+    saveStoreWithActivity("ERROR_LOGS_CLEAR", "Cleared all error logs.");
+    renderApp();
+  });
+}
+
+function bindActivityLogsEvents() {
+  bindFishQuickSearch(
+    "activityLogsSearchInput",
+    "activityLogsTableBody",
+    "activityLogsSearchEmptyRow",
+    "activityLogs"
+  );
+
+  const downloadBtn = document.getElementById("downloadActivityLogsBtn");
+  const clearBtn = document.getElementById("clearActivityLogsBtn");
+
+  downloadBtn?.addEventListener("click", () => {
+    const payload = JSON.stringify(DATA.activity_logs || [], null, 2);
+    const filename = `fishops-activity-logs-${isoDateToday()}.json`;
+    triggerBackupDownload(payload, filename);
+  });
+
+  clearBtn?.addEventListener("click", () => {
+    if (state.currentUser?.role !== "master") {
+      return;
+    }
+    const ok = window.confirm("Clear all activity logs?");
+    if (!ok) {
+      return;
+    }
+    DATA.activity_logs = [];
+    saveStoreWithActivity("ACTIVITY_LOGS_CLEAR", "Cleared all activity logs.");
+    renderApp();
+  });
+}
+
 function bindMonthlyCalculationsEvents() {
   const monthInput = document.getElementById("monthlyCalcMonthInput");
   monthInput?.addEventListener("change", () => {
@@ -5310,6 +8632,24 @@ function bindMonthlyCalculationsEvents() {
       return;
     }
     state.monthlyViewMonth = nextMonth;
+    renderApp();
+  });
+}
+
+function bindBillingProgressEvents() {
+  if (state.currentUser?.role !== "master") {
+    return;
+  }
+
+  const dateInput = document.getElementById("billingProgressDateInput");
+  dateInput?.addEventListener("change", () => {
+    const nextDate = String(dateInput.value || "");
+    if (!isIsoDate(nextDate)) {
+      dateInput.value = state.date;
+      return;
+    }
+    state.date = nextDate;
+    ui.dateInput.value = nextDate;
     renderApp();
   });
 }
@@ -5338,7 +8678,7 @@ function bindSettingsEvents() {
   settingsUploadLogoBtn?.addEventListener("click", openLogoPicker);
   settingsClearLogoBtn?.addEventListener("click", () => {
     state.settings.company_logo = "";
-    saveStore();
+    saveStoreWithActivity("SETTINGS_LOGO_CLEAR", "Cleared company logo.");
     applyBranding();
     renderApp();
   });
@@ -5350,7 +8690,9 @@ function bindSettingsEvents() {
 
     const result = await chooseDailyBackupDirectory();
     if (result.ok) {
-      saveStore();
+      saveStoreWithActivity("BACKUP_FOLDER_SET", "Selected daily auto backup folder.", {
+        details: { folder_label: state.settings.auto_backup_location_label || "" }
+      });
       if (dailyBackupFolderLabelInput) {
         dailyBackupFolderLabelInput.value =
           state.settings.auto_backup_location_label || "Not selected";
@@ -5373,7 +8715,7 @@ function bindSettingsEvents() {
       return;
     }
     await clearDailyBackupDirectory();
-    saveStore();
+    saveStoreWithActivity("BACKUP_FOLDER_CLEAR", "Cleared daily auto backup folder.");
     if (dailyBackupFolderLabelInput) {
       dailyBackupFolderLabelInput.value = "Not selected";
     }
@@ -5406,7 +8748,14 @@ function bindSettingsEvents() {
       state.settings.auto_backup_after_closing = Boolean(autoBackupAfterClosingInput?.checked);
     }
 
-    saveStore();
+    saveStoreWithActivity("SETTINGS_SAVE", "Saved settings.", {
+      details: {
+        company_name: state.settings.company_name,
+        currency: state.settings.currency,
+        maintenance_mode: state.settings.maintenance_mode,
+        auto_backup_after_closing: state.settings.auto_backup_after_closing
+      }
+    });
     applyBranding();
     renderApp();
 
@@ -5451,7 +8800,9 @@ function bindSettingsEvents() {
 
       branch.name = branchName;
       branch.location = branchLocation;
-      saveStore();
+      saveStoreWithActivity("BRANCH_UPDATE", `Updated branch "${branchId}".`, {
+        details: { branch_id: branchId, name: branchName, location: branchLocation }
+      });
       populateBranchSelector();
       renderApp();
       alert(`Branch "${branchId}" updated.`);
@@ -5476,10 +8827,11 @@ function bindSettingsEvents() {
       }
 
       const usage = getBranchUsage(branchId);
-      const linkedCount = usage.users + usage.settings + usage.prices + usage.stock + usage.hold;
+      const linkedCount =
+        usage.users + usage.settings + usage.prices + usage.stock + usage.hold + usage.orders + usage.bills;
       if (linkedCount > 0) {
         alert(
-          `Cannot delete "${branchId}" because linked records exist (users: ${usage.users}, settings: ${usage.settings}, prices: ${usage.prices}, stock: ${usage.stock}, hold: ${usage.hold}).`
+          `Cannot delete "${branchId}" because linked records exist (users: ${usage.users}, settings: ${usage.settings}, prices: ${usage.prices}, stock: ${usage.stock}, hold: ${usage.hold}, orders: ${usage.orders}, bills: ${usage.bills}).`
         );
         return;
       }
@@ -5493,7 +8845,9 @@ function bindSettingsEvents() {
       if (state.branchId === branchId) {
         state.branchId = "";
       }
-      saveStore();
+      saveStoreWithActivity("BRANCH_DELETE", `Deleted branch "${branchId}".`, {
+        details: { branch_id: branchId, name: branch.name }
+      });
       populateBranchSelector();
       renderApp();
       alert(`Branch "${branchId}" deleted.`);
@@ -5527,7 +8881,9 @@ function bindSettingsEvents() {
       status: "active"
     });
 
-    saveStore();
+    saveStoreWithActivity("BRANCH_CREATE", `Added branch "${branchName}".`, {
+      details: { branch_id: branchId, location: branchLocation }
+    });
     state.branchId = branchId;
     populateBranchSelector();
     renderApp();
@@ -5545,6 +8901,9 @@ function deleteDataByCategory(category) {
       DATA.daily_prices = [];
       DATA.daily_stock_entry = [];
       DATA.hold_stock_entry = [];
+      DATA.shop_orders = [];
+      DATA.customer_bills = [];
+      DATA.app_error_logs = [];
       break;
     case "daily_prices":
       DATA.daily_prices = [];
@@ -5555,6 +8914,18 @@ function deleteDataByCategory(category) {
     case "hold_stock_entry":
       DATA.hold_stock_entry = [];
       break;
+    case "shop_orders":
+      DATA.shop_orders = [];
+      break;
+    case "customer_bills":
+      DATA.customer_bills = [];
+      break;
+    case "app_error_logs":
+      DATA.app_error_logs = [];
+      break;
+    case "activity_logs":
+      DATA.activity_logs = [];
+      break;
     case "branch_fish_settings":
       DATA.branch_fish_settings = [];
       break;
@@ -5564,6 +8935,9 @@ function deleteDataByCategory(category) {
       DATA.daily_prices = [];
       DATA.daily_stock_entry = [];
       DATA.hold_stock_entry = [];
+      DATA.shop_orders = [];
+      DATA.customer_bills = [];
+      DATA.app_error_logs = [];
       break;
     case "users_non_master":
       DATA.users = DATA.users.filter((user) => user.role === "master");
@@ -5612,7 +8986,11 @@ function fullWipeAllDataForMaster() {
     branch_fish_settings: [],
     daily_prices: [],
     daily_stock_entry: [],
-    hold_stock_entry: []
+    hold_stock_entry: [],
+    shop_orders: [],
+    customer_bills: [],
+    app_error_logs: [],
+    activity_logs: []
   };
 
   state.settings = clone(DEFAULT_STORE.settings);
@@ -5620,7 +8998,10 @@ function fullWipeAllDataForMaster() {
     // ignore backup folder cleanup failures
   });
   applyBranding();
-  saveStore();
+  saveStoreWithActivity("FULL_WIPE", "Executed full wipe of all data.", {
+    user: currentMaster,
+    details: { preserved_master_id: currentMaster?.id || "" }
+  });
 }
 
 function bindDeleteDataEvents() {
@@ -5650,7 +9031,9 @@ function bindDeleteDataEvents() {
         return;
       }
 
-      saveStore();
+      saveStoreWithActivity("DELETE_CATEGORY", `Deleted data category "${categoryLabel}".`, {
+        details: { category }
+      });
       renderApp();
     });
   });
@@ -5693,6 +9076,15 @@ function bindActivePageEvents() {
     case "hold_stock":
       bindHoldStockEvents();
       break;
+    case "shop_orders":
+      bindShopOrdersEvents();
+      break;
+    case "billing":
+      bindBillingEvents();
+      break;
+    case "billing_progress":
+      bindBillingProgressEvents();
+      break;
     case "remaining_stock_holds":
       bindRemainingStockHoldsEvents();
       break;
@@ -5704,6 +9096,15 @@ function bindActivePageEvents() {
       break;
     case "reports":
       bindReportsEvents();
+      break;
+    case "transfer_suggestions":
+      bindTransferSuggestionsEvents();
+      break;
+    case "error_logs":
+      bindErrorLogsEvents();
+      break;
+    case "activity_logs":
+      bindActivityLogsEvents();
       break;
     case "monthly_calculations":
       bindMonthlyCalculationsEvents();
@@ -5755,9 +9156,10 @@ function applyRoleUiConstraints() {
 }
 
 function renderApp() {
+  const visiblePages = getVisiblePages(state.currentUser);
   const currentPage = PAGES.find((page) => page.id === state.activePage);
-  if (!currentPage || !hasPermission(state.currentUser, currentPage.permission)) {
-    state.activePage = getVisiblePages(state.currentUser)[0]?.id || "dashboard";
+  if (!currentPage || !visiblePages.some((page) => page.id === currentPage.id)) {
+    state.activePage = visiblePages[0]?.id || "dashboard";
   }
 
   renderNav();
@@ -5789,11 +9191,30 @@ function startSession(user) {
   state.quickSearch.branchFishSettings = "";
   state.quickSearch.dailyPrices = "";
   state.quickSearch.yDailyPrices = "";
+  state.quickSearch.transferSuggestions = "";
+  state.quickSearch.errorLogs = "";
+  state.quickSearch.activityLogs = "";
   state.quickSearch.holdStock = "";
+  state.quickSearch.shopOrders = "";
+  state.quickSearch.billing = "";
   state.quickSearch.remainingStocks = "";
   state.quickSearch.remainingHolds = "";
   state.quickSearch.morningOpeningStock = "";
   state.quickSearch.nightClosingStock = "";
+  state.shopOrderDraftBranchId = "";
+  state.shopOrderDraftItems = [];
+  state.billingDraftBranchId = "";
+  state.billingDraftItems = [];
+  state.billingDraftCategory = BILLING_CATEGORY_ALL;
+  state.billingDraftSearch = "";
+  state.billingDraftCustomerName = "";
+  state.billingDraftInvoiceNo = "";
+  state.billingDraftPaymentMethod = "cash";
+  state.billingDraftPaymentTerms = "immediate";
+  state.billingDraftAmountPaid = 0;
+  state.billingDraftNotes = "";
+  state.billingDraftRequests = "";
+  state.billingRecentDetailsId = "";
   state.date = isoDateToday();
   state.monthlyViewMonth = state.date.slice(0, 7);
   ui.dateInput.value = state.date;
@@ -5802,20 +9223,50 @@ function startSession(user) {
   renderApp();
   ui.loginScreen.classList.add("hidden");
   ui.appShell.classList.remove("hidden");
+  saveStoreWithActivity("LOGIN", `User "${user.username}" signed in.`, {
+    user,
+    details: { role: user.role, branch_id: state.branchId }
+  });
   startRemoteStorePolling();
   void checkForRemoteStoreUpdate();
 }
 
 function endSession() {
+  const previousUser = state.currentUser;
+  if (previousUser) {
+    saveStoreWithActivity("LOGOUT", `User "${previousUser.username}" signed out.`, {
+      user: previousUser,
+      details: { role: previousUser.role, branch_id: state.branchId }
+    });
+  }
   state.currentUser = null;
   state.quickSearch.branchFishSettings = "";
   state.quickSearch.dailyPrices = "";
   state.quickSearch.yDailyPrices = "";
+  state.quickSearch.transferSuggestions = "";
+  state.quickSearch.errorLogs = "";
+  state.quickSearch.activityLogs = "";
   state.quickSearch.holdStock = "";
+  state.quickSearch.shopOrders = "";
+  state.quickSearch.billing = "";
   state.quickSearch.remainingStocks = "";
   state.quickSearch.remainingHolds = "";
   state.quickSearch.morningOpeningStock = "";
   state.quickSearch.nightClosingStock = "";
+  state.shopOrderDraftBranchId = "";
+  state.shopOrderDraftItems = [];
+  state.billingDraftBranchId = "";
+  state.billingDraftItems = [];
+  state.billingDraftCategory = BILLING_CATEGORY_ALL;
+  state.billingDraftSearch = "";
+  state.billingDraftCustomerName = "";
+  state.billingDraftInvoiceNo = "";
+  state.billingDraftPaymentMethod = "cash";
+  state.billingDraftPaymentTerms = "immediate";
+  state.billingDraftAmountPaid = 0;
+  state.billingDraftNotes = "";
+  state.billingDraftRequests = "";
+  state.billingRecentDetailsId = "";
   state.monthlyViewMonth = isoDateToday().slice(0, 7);
   ui.usernameInput.value = "";
   ui.passwordInput.value = "";
@@ -5885,6 +9336,23 @@ function wireEvents() {
       void checkForRemoteStoreUpdate();
     }
   });
+
+  window.addEventListener("error", (event) => {
+    captureAppError(event.error || event.message, {
+      level: "ERROR",
+      source: event.filename,
+      line: event.lineno,
+      column: event.colno,
+      details: event.message
+    });
+  });
+
+  window.addEventListener("unhandledrejection", (event) => {
+    captureAppError(event.reason || "Unhandled promise rejection", {
+      level: "PROMISE",
+      details: event.reason
+    });
+  });
 }
 
 async function init() {
@@ -5909,5 +9377,8 @@ async function init() {
   ui.usernameInput.focus();
 }
 
-init();
+init().catch((error) => {
+  captureAppError(error, { level: "ERROR", details: "init() failed" });
+  alert("Application initialization failed. Check Error Logs tab after reload.");
+});
 
