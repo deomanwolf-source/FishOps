@@ -17,6 +17,39 @@ app.get("/api/health", (req, res) => {
   res.json({ ok: true });
 });
 
+app.post("/api/login", async (req, res) => {
+  const username = String(req.body?.username || "").trim();
+  const password = String(req.body?.password || "");
+  if (!username || !password) {
+    res.status(400).json({ error: "username and password required" });
+    return;
+  }
+
+  try {
+    const user = await db.findActiveUserByCredentials(username, password);
+    if (!user) {
+      res.status(401).json({ error: "Invalid username or password." });
+      return;
+    }
+
+    const branchValue = String(user.branch || "").trim();
+    const branchId = branchValue.toUpperCase() === "GLOBAL" ? "" : branchValue;
+
+    res.json({
+      ok: true,
+      user: {
+        id: String(user.id),
+        username: String(user.username || ""),
+        role: String(user.role || "user"),
+        status: String(user.status || "active"),
+        branch_id: branchId
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ error: String(error?.message || error) });
+  }
+});
+
 // users
 app.get("/api/users", async (req, res) => {
   try {

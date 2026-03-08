@@ -79,6 +79,9 @@ CREATE TABLE IF NOT EXISTS app_store (
     userInsert: db.prepare(
       "INSERT INTO users (username, password, role, status, branch) VALUES (?, ?, ?, ?, ?)"
     ),
+    userByCredentials: db.prepare(
+      "SELECT id, username, role, status, branch FROM users WHERE lower(username) = lower(?) AND password = ? AND status = 'active' LIMIT 1"
+    ),
     stockList: db.prepare("SELECT * FROM daily_stock WHERE date = ? AND branch = ? ORDER BY fish"),
     stockUpsert: db.prepare(`
       INSERT INTO daily_stock (date, branch, fish, qty, price)
@@ -107,6 +110,9 @@ CREATE TABLE IF NOT EXISTS app_store (
     async createUser({ username, password, role, status, branch }) {
       const info = statements.userInsert.run(username, password, role, status, branch);
       return Number(info.lastInsertRowid);
+    },
+    async findActiveUserByCredentials(username, password) {
+      return statements.userByCredentials.get(username, password) || null;
     },
     async listDailyStock(date, branch) {
       return statements.stockList.all(date, branch);
@@ -189,6 +195,13 @@ CREATE TABLE IF NOT EXISTS app_store (
         [username, password, role, status, branch]
       );
       return Number(result.rows[0]?.id);
+    },
+    async findActiveUserByCredentials(username, password) {
+      const result = await pool.query(
+        "SELECT id, username, role, status, branch FROM users WHERE lower(username) = lower($1) AND password = $2 AND status = 'active' ORDER BY id DESC LIMIT 1",
+        [username, password]
+      );
+      return result.rows[0] || null;
     },
     async listDailyStock(date, branch) {
       const result = await pool.query(
