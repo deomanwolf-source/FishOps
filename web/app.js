@@ -4616,6 +4616,7 @@ function renderBillingPage() {
       const statusClass = status === "PAID" ? "ok" : status === "PARTIAL" ? "warning" : "critical";
       const isDetailsOpen = state.billingRecentDetailsId === String(row.id || "");
       const rowTotalAmount = round2(numberOr(row.total_amount, 0));
+      const rowNetTotal = rowTotalAmount;
       const rowPaidAmount = Math.max(0, round2(numberOr(row.amount_paid, 0)));
       const rowBalanceAmount = round2(Math.abs(rowTotalAmount - rowPaidAmount));
       const itemLines = (Array.isArray(row.items) ? row.items : [])
@@ -4656,6 +4657,7 @@ function renderBillingPage() {
                   <div class="billing-pos-recent-meta">
                     <p><strong>Payment:</strong> ${escapeHtml(paymentMethodLabel(row.payment_method))}</p>
                     <p><strong>Terms:</strong> ${escapeHtml(paymentTermsLabel(row.payment_terms))}</p>
+                    <p><strong>Net Total:</strong> ${money(rowNetTotal)}</p>
                     <p><strong>Paid:</strong> ${money(rowPaidAmount)}</p>
                     <p><strong>Balance:</strong> ${money(rowBalanceAmount)}</p>
                   </div>
