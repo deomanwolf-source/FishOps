@@ -2610,6 +2610,9 @@ function downloadShopOrderInvoice(order) {
 
 function buildCustomerBillInvoiceText(order) {
   const branch = findBranchById(order.branch_id);
+  const totalAmount = round2(numberOr(order.total_amount, 0));
+  const amountPaid = Math.max(0, round2(numberOr(order.amount_paid, 0)));
+  const balanceAmount = round2(Math.abs(totalAmount - amountPaid));
   const header = [
     `${state.settings.company_name || "RTX FishOps"} - CUSTOMER BILL`,
     `Bill No: ${order.invoice_no || order.id}`,
@@ -2630,9 +2633,10 @@ function buildCustomerBillInvoiceText(order) {
 
   const footer = [
     "",
-    `Total Amount: ${money(numberOr(order.total_amount, 0))}`,
-    `Amount Paid: ${money(numberOr(order.amount_paid, 0))}`,
-    `Balance Due: ${money(numberOr(order.balance_due, 0))}`,
+    `Net Total: ${money(totalAmount)}`,
+    `Total Amount: ${money(totalAmount)}`,
+    `Amount Paid: ${money(amountPaid)}`,
+    `Balance: ${money(balanceAmount)}`,
     `Status: ${order.payment_status || "UNPAID"}`,
     "",
     `Notes: ${order.notes || "-"}`
@@ -3098,7 +3102,8 @@ function buildBillingProgressSummary(branchId, dateText) {
     }
 
     const revenue = Math.max(0, round2(numberOr(row.total_amount, 0)));
-    const income = Math.max(0, round2(numberOr(row.amount_paid, 0)));
+    const amountPaid = Math.max(0, round2(numberOr(row.amount_paid, 0)));
+    const income = round2(Math.min(revenue, amountPaid));
     const profit = income;
 
     totals.bills += 1;
@@ -5935,7 +5940,7 @@ function renderBillingProgressPage() {
         Scope: ${escapeHtml(getBranchScopeLabel(state.branchId))} | Date: ${escapeHtml(summary.date)} | Master dashboard for daily sell billing.
       </p>
       <p class="page-note">
-        Billing Progress uses only Billing records. Profit here is billing-only profit from paid income (no stock/cost data is used).
+        Billing Progress uses only Billing records. Income/Profit here are capped to bill total (overpayment/change is excluded).
       </p>
     </section>
 
