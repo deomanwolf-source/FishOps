@@ -11,7 +11,7 @@ RTX FishOps is a multi-branch fish inventory and finance foundation built around
 - Organization: RTX Technologies
 - Domain: Retail and inventory management / fish market operations
 - Development type: Proprietary in-house software
-- Technology stack: HTML/CSS, JavaScript, IndexedDB, PWA (Service Worker)
+- Technology stack: HTML/CSS, JavaScript, Firebase Realtime Database, PWA (Service Worker)
 - Architecture: RTX Virual Engine runtime with multi-branch operations and daily price engine
 - Target platform: Windows (PWA desktop install on RTX Virual Engine)
 - Future direction: Cloud sync and multi-branch SaaS expansion
@@ -90,40 +90,24 @@ No per-sale entry is required. The system computes:
 - `LOW` alert when `closing_qty < target_stock`
 - `OK` alert when `closing_qty >= target_stock`
 
-## Quick start (backend + website server)
+## Quick start (HTML app + Firebase)
 
 ```bash
 npm install
-npm start
+npm run serve:static
 ```
 
-This starts the FishOps Express API + web server from the project root.
+This serves the app as a static website.
 
 - Default URL: `http://127.0.0.1:8080`
-- API health: `http://127.0.0.1:8080/api/health`
-- Storage backend:
-  - SQLite by default: `./data/fishops.db`
-  - PostgreSQL when `DATABASE_URL` is set
-- Optional environment variables:
-  - `PORT` (for cloud/server platforms)
-  - `DATABASE_URL` (example: `postgresql://postgres:password@localhost:5432/fishops`)
-  - `PGSSLMODE=require` (optional for managed PostgreSQL services)
+- Configure Firebase in `web/firebase-config.js`:
+  - `enabled: true`
+  - `databaseURL: "https://<your-project>-default-rtdb.firebaseio.com"`
+  - `namespace: "fishops"` (or your preferred root path)
+  - `authToken` only if your database rules require it
+- App sync writes `{ store, updated_at }` under `/<namespace>` in Realtime Database.
 
-### Use PostgreSQL for app data
-
-If PostgreSQL is running on your machine:
-
-```bash
-export DATABASE_URL="postgresql://postgres:your_password@localhost:5432/fishops"
-npm install
-npm start
-```
-
-On Ubuntu/Linux, create the DB once if needed:
-
-```bash
-sudo -u postgres psql -c "CREATE DATABASE fishops;"
-```
+For quick testing, make sure your Realtime Database rules allow read/write to your chosen namespace.
 
 ## Domain engine quick run (non-UI)
 
@@ -135,7 +119,7 @@ npm run start:engine
 
 This runs the TypeScript service/engine sample in `src/index.ts`.
 
-## Run server for another computer (Windows/LAN)
+## Run app for another computer (Windows/LAN)
 
 Host computer (the one that has this project):
 
@@ -167,7 +151,7 @@ chmod +x ./tools/install-autostart-ubuntu.sh
 
 This installs and starts a `fishops` service that runs:
 
-- `node server/index.mjs`
+- `node tools/serve-web.mjs --host 0.0.0.0 --port 8080`
 - Working directory = your current project folder
 - Trigger = boot startup
 
@@ -195,7 +179,7 @@ powershell -ExecutionPolicy Bypass -File .\tools\install-autostart-windows.ps1
 
 This installs a startup task named `FishOpsServer` that runs:
 
-- `node server/index.mjs`
+- `node tools/serve-web.mjs --host 0.0.0.0 --port 8080`
 - Working directory = project root
 - Trigger = machine startup
 
@@ -227,9 +211,9 @@ sudo systemctl restart fishops
 sudo systemctl status fishops
 ```
 
-### PM2 (persistent with `.env`)
+### PM2 (persistent service)
 
-Create `.env` from `.env.example` and set `DATABASE_URL`.
+Optional: create `.env` from `.env.example` and set `HOST` / `PORT` if needed.
 
 Start or recreate process using ecosystem config:
 

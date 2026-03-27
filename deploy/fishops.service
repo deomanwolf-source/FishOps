@@ -1,12 +1,12 @@
 [Unit]
-Description=FishOps Server
+Description=FishOps Static Web
 After=network.target
 
 [Service]
 Type=simple
 User=fishops
 WorkingDirectory=/opt/fishops
-ExecStart=/usr/bin/node /opt/fishops/server/index.mjs
+ExecStart=/usr/bin/node /opt/fishops/tools/serve-web.mjs --host 0.0.0.0 --port 8080
 Restart=always
 RestartSec=3
 Environment=PORT=8080

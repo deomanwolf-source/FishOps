@@ -42,6 +42,7 @@ const envFromFile = loadEnvFile(path.join(__dirname, ".env"));
 const appEnv = {
   NODE_ENV: envFromFile.NODE_ENV || process.env.NODE_ENV || "production",
   PORT: envFromFile.PORT || process.env.PORT || "8080",
+  HOST: envFromFile.HOST || process.env.HOST || "0.0.0.0",
   DATABASE_URL: envFromFile.DATABASE_URL || process.env.DATABASE_URL || ""
 };
 
@@ -50,7 +51,7 @@ module.exports = {
     {
       name: "fishops",
       cwd: __dirname,
-      script: "server/index.mjs",
+      script: "tools/serve-web.mjs",
       interpreter: "node",
       env: appEnv
     }

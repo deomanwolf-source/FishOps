@@ -11,10 +11,10 @@ if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdent
 }
 
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$serverEntry = Join-Path $projectRoot "server\index.mjs"
+$serverEntry = Join-Path $projectRoot "tools\serve-web.mjs"
 
 if (-not (Test-Path $serverEntry)) {
-  throw "Cannot find server entry file at: $serverEntry"
+  throw "Cannot find static server entry file at: $serverEntry"
 }
 
 $candidateNodePaths = @(
@@ -25,13 +25,16 @@ $candidateNodePaths = @(
 
 $nodePath = $candidateNodePaths | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
 if (-not $nodePath) {
-  $nodePath = (Get-Command node -ErrorAction SilentlyContinue)?.Source
+  $nodeCommand = Get-Command node -ErrorAction SilentlyContinue
+  if ($nodeCommand) {
+    $nodePath = $nodeCommand.Source
+  }
 }
 if (-not $nodePath) {
   throw "Node.js not found. Install Node.js LTS and run again."
 }
 
-$argument = "`"$serverEntry`""
+$argument = "`"$serverEntry`" --host 0.0.0.0 --port 8080"
 
 $action = New-ScheduledTaskAction -Execute $nodePath -Argument $argument -WorkingDirectory $projectRoot
 $trigger = New-ScheduledTaskTrigger -AtStartup

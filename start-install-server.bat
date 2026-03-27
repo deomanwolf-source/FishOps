@@ -20,10 +20,10 @@ if errorlevel 1 (
   exit /b 1
 )
 
-echo Starting FishOps backend + web server on port 8080...
+echo Starting FishOps static web app on port 8080...
 echo Use the LAN URL shown in terminal on other computers.
 echo.
-node server\index.mjs
+node tools\serve-web.mjs --host 0.0.0.0 --port 8080
 set EXIT_CODE=%ERRORLEVEL%
 
 if not "%EXIT_CODE%"=="0" (

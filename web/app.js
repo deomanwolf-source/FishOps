@@ -7,11 +7,15 @@ const ALL_BRANCH_OPTION_LABEL = "All Branches";
 const BACKUP_HANDLE_DB_NAME = "fishops_backup_handles_v1";
 const BACKUP_HANDLE_STORE_NAME = "handles";
 const DAILY_BACKUP_HANDLE_KEY = "daily_backup_directory";
-const REMOTE_STORE_ENDPOINT = "/api/store";
-const REMOTE_BACKUP_ENDPOINT = "/api/backup";
-const REMOTE_STORE_VERSION_ENDPOINT = "/api/store/version";
 const REMOTE_STORE_POLL_INTERVAL_MS = 15000;
 const LOCAL_STORE_PERSISTENCE_ENABLED = false;
+const FIREBASE_CONFIG = Object.freeze({
+  enabled: Boolean(window.FISHOPS_FIREBASE_CONFIG?.enabled),
+  databaseURL: String(window.FISHOPS_FIREBASE_CONFIG?.databaseURL || "").trim(),
+  namespace: String(window.FISHOPS_FIREBASE_CONFIG?.namespace || "fishops").trim(),
+  authToken: String(window.FISHOPS_FIREBASE_CONFIG?.authToken || "").trim()
+});
+const FIREBASE_NAMESPACE = FIREBASE_CONFIG.namespace.replace(/^\/+|\/+$/g, "") || "fishops";
 const MAX_APP_ERROR_LOGS = 800;
 const MAX_ACTIVITY_LOGS = 5000;
 const ORDER_CHANNEL_SHOP = "shop_order";
@@ -155,6 +159,52 @@ let storageQuotaFailureAlertShown = false;
 let clientErrorCaptureInstalled = false;
 
 const clientErrorLogs = [];
+
+function isRemoteSyncConfigured() {
+  return FIREBASE_CONFIG.enabled && FIREBASE_CONFIG.databaseURL.length > 0;
+}
+
+function getRemoteSyncMissingConfigMessage() {
+  return "Firebase sync is not configured. Update web/firebase-config.js and enable it.";
+}
+
+function buildFirebaseRemoteUrl(path = "") {
+  const baseUrl = FIREBASE_CONFIG.databaseURL.replace(/\/+$/g, "");
+  const cleanPath = String(path || "")
+    .replace(/^\/+/g, "")
+    .replace(/\/+$/g, "");
+  const fullPath = cleanPath ? `${FIREBASE_NAMESPACE}/${cleanPath}` : FIREBASE_NAMESPACE;
+  let url = `${baseUrl}/${fullPath}.json`;
+  if (FIREBASE_CONFIG.authToken) {
+    url += `?auth=${encodeURIComponent(FIREBASE_CONFIG.authToken)}`;
+  }
+  return url;
+}
+
+function normalizeRemoteStoreEnvelope(payload) {
+  if (!payload || typeof payload !== "object") {
+    return { store: null, updated_at: "" };
+  }
+
+  if (payload.store && typeof payload.store === "object") {
+    return {
+      store: payload.store,
+      updated_at: String(payload.updated_at || "")
+    };
+  }
+
+  if (payload.data && payload.settings) {
+    return {
+      store: payload,
+      updated_at: String(payload.updated_at || "")
+    };
+  }
+
+  return {
+    store: null,
+    updated_at: String(payload.updated_at || "")
+  };
+}
 
 const state = {
   currentUser: null,
@@ -1353,23 +1403,33 @@ function readResponseJsonSafe(response) {
 }
 
 async function uploadStoreSnapshot({
-  endpoint = REMOTE_STORE_ENDPOINT,
-  method = "PUT",
   showAlert = false,
-  successMessage = "Backup sent to server.",
-  failureMessage = "Failed to send backup to server"
+  successMessage = "Backup sent to Firebase.",
+  failureMessage = "Failed to send backup to Firebase"
 } = {}) {
+  if (!isRemoteSyncConfigured()) {
+    remoteSyncAvailable = false;
+    if (showAlert) {
+      alert(getRemoteSyncMissingConfigMessage());
+    }
+    return false;
+  }
+
   if (remoteStorePushInFlight) {
     return false;
   }
 
   remoteStorePushInFlight = true;
   try {
-    const response = await fetch(endpoint, {
-      method,
+    const updatedAt = new Date().toISOString();
+    const response = await fetch(buildFirebaseRemoteUrl(), {
+      method: "PATCH",
       headers: { "Content-Type": "application/json" },
       cache: "no-store",
-      body: JSON.stringify({ store: getCurrentStoreSnapshot() })
+      body: JSON.stringify({
+        store: getCurrentStoreSnapshot(),
+        updated_at: updatedAt
+      })
     });
     const payload = await readResponseJsonSafe(response);
     if (!response.ok) {
@@ -1378,9 +1438,7 @@ async function uploadStoreSnapshot({
     }
 
     remoteSyncAvailable = true;
-    if (payload?.updated_at) {
-      remoteStoreVersion = String(payload.updated_at);
-    }
+    remoteStoreVersion = updatedAt;
 
     if (showAlert) {
       alert(successMessage);
@@ -1403,11 +1461,7 @@ async function flushScheduledRemoteStorePush() {
     scheduleRemoteStorePush();
     return;
   }
-  await uploadStoreSnapshot({
-    endpoint: REMOTE_STORE_ENDPOINT,
-    method: "PUT",
-    showAlert: false
-  });
+  await uploadStoreSnapshot({ showAlert: false });
 }
 
 function scheduleRemoteStorePush() {
@@ -1430,7 +1484,7 @@ function refreshSessionFromCurrentData({ notifyOnLogout = false } = {}) {
   if (!currentUser) {
     endSession();
     if (notifyOnLogout) {
-      alert("Data updated from server. Please log in again.");
+      alert("Data updated from Firebase. Please log in again.");
     }
     return false;
   }
@@ -1457,23 +1511,35 @@ function applyRemoteStorePayload(storePayload, options = {}) {
 }
 
 async function fetchRemoteStore() {
-  const response = await fetch(REMOTE_STORE_ENDPOINT, { cache: "no-store" });
+  if (!isRemoteSyncConfigured()) {
+    throw new Error(getRemoteSyncMissingConfigMessage());
+  }
+
+  const response = await fetch(buildFirebaseRemoteUrl(), { cache: "no-store" });
   const payload = await readResponseJsonSafe(response);
   if (!response.ok) {
     const detail = payload?.error ? ` ${payload.error}` : "";
-    throw new Error(`Unable to fetch /api/store (${response.status}).${detail}`);
+    throw new Error(`Unable to fetch Firebase store (${response.status}).${detail}`);
   }
   remoteSyncAvailable = true;
-  return payload;
+  return normalizeRemoteStoreEnvelope(payload);
 }
 
 async function reloadStoreFromServer(showAlert = false) {
+  if (!isRemoteSyncConfigured()) {
+    remoteSyncAvailable = false;
+    if (showAlert) {
+      alert(getRemoteSyncMissingConfigMessage());
+    }
+    return false;
+  }
+
   try {
     const payload = await fetchRemoteStore();
     const nextStore = payload?.store;
     if (!nextStore || typeof nextStore !== "object") {
       if (showAlert) {
-        alert("No server backup found yet.");
+        alert("No Firebase backup found yet.");
       }
       return false;
     }
@@ -1490,10 +1556,10 @@ async function reloadStoreFromServer(showAlert = false) {
     }
 
     if (showAlert) {
-      saveStoreWithActivity("BACKUP_RELOAD_SERVER", "Reloaded latest backup from server.", {
-        details: { updatedAt: payload?.updated_at || "", source: "manual_reload" }
+      saveStoreWithActivity("BACKUP_RELOAD_SERVER", "Reloaded latest backup from Firebase.", {
+        details: { updatedAt: payload?.updated_at || "", source: "manual_reload_firebase" }
       });
-      alert("Loaded latest backup from server.");
+      alert("Loaded latest backup from Firebase.");
     }
     return true;
   } catch (error) {
@@ -1507,14 +1573,28 @@ async function reloadStoreFromServer(showAlert = false) {
 }
 
 async function fetchRemoteStoreVersion() {
+  if (!isRemoteSyncConfigured()) {
+    remoteSyncAvailable = false;
+    return "";
+  }
+
   try {
-    const response = await fetch(REMOTE_STORE_VERSION_ENDPOINT, { cache: "no-store" });
+    const response = await fetch(buildFirebaseRemoteUrl("updated_at"), { cache: "no-store" });
     const payload = await readResponseJsonSafe(response);
     if (!response.ok) {
       return "";
     }
     remoteSyncAvailable = true;
-    return String(payload?.updated_at || "");
+    if (payload === null || payload === undefined) {
+      return "";
+    }
+    if (typeof payload === "string" || typeof payload === "number") {
+      return String(payload);
+    }
+    if (typeof payload === "object") {
+      return String(payload.updated_at || "");
+    }
+    return "";
   } catch {
     remoteSyncAvailable = false;
     return "";
@@ -1522,7 +1602,7 @@ async function fetchRemoteStoreVersion() {
 }
 
 async function checkForRemoteStoreUpdate() {
-  if (!state.currentUser || document.visibilityState !== "visible") {
+  if (!isRemoteSyncConfigured() || !state.currentUser || document.visibilityState !== "visible") {
     return;
   }
 
@@ -1549,6 +1629,9 @@ async function checkForRemoteStoreUpdate() {
 
 function startRemoteStorePolling() {
   stopRemoteStorePolling();
+  if (!isRemoteSyncConfigured()) {
+    return;
+  }
   remoteStorePollTimerId = window.setInterval(() => {
     void checkForRemoteStoreUpdate();
   }, REMOTE_STORE_POLL_INTERVAL_MS);
@@ -1567,14 +1650,12 @@ async function sendBackupToServer() {
   }
 
   const sent = await uploadStoreSnapshot({
-    endpoint: REMOTE_BACKUP_ENDPOINT,
-    method: "POST",
     showAlert: true,
-    successMessage: "Backup sent and saved on server."
+    successMessage: "Backup sent and saved in Firebase."
   });
   if (sent) {
-    saveStoreWithActivity("BACKUP_SEND_SERVER", "Sent backup to server.", {
-      details: { endpoint: REMOTE_BACKUP_ENDPOINT }
+    saveStoreWithActivity("BACKUP_SEND_SERVER", "Sent backup to Firebase.", {
+      details: { source: "firebase" }
     });
   }
 }
@@ -10008,60 +10089,21 @@ function findLocalActiveUser(username, password) {
 }
 
 async function loginWithApi(username, password) {
-  let response;
-  try {
-    response = await fetch("/api/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, password })
-    });
-  } catch (error) {
-    return {
-      user: null,
-      error: String(error?.message || error),
-      fallbackToLocal: true
-    };
+  if (isRemoteSyncConfigured()) {
+    await reloadStoreFromServer(false);
   }
 
-  let payload = null;
-  try {
-    payload = await response.json();
-  } catch {
-    payload = null;
-  }
-
-  if (!response.ok) {
+  const localUser = findLocalActiveUser(username, password);
+  if (!localUser) {
     return {
       user: null,
-      error: String(payload?.error || "Invalid username or password."),
-      fallbackToLocal:
-        response.status === 401 ||
-        response.status === 404 ||
-        response.status === 405 ||
-        response.status >= 500
-    };
-  }
-
-  const remoteUser = payload?.user;
-  if (!remoteUser || typeof remoteUser !== "object") {
-    return {
-      user: null,
-      error: "Invalid login response from server.",
+      error: "Invalid username or password.",
       fallbackToLocal: false
     };
   }
 
-  const role = String(remoteUser.role || "user").toLowerCase();
   return {
-    user: {
-      id: String(remoteUser.id || ""),
-      username: String(remoteUser.username || username),
-      password: "",
-      role,
-      status: String(remoteUser.status || "active").toLowerCase(),
-      branch_id: normalizeUserBranchScope(role, remoteUser.branch_id),
-      photo: ""
-    },
+    user: clone(localUser),
     error: "",
     fallbackToLocal: false
   };
@@ -10087,15 +10129,11 @@ async function handleLoginSubmit(event) {
       submitButton.disabled = true;
     }
 
-    const remoteLogin = await loginWithApi(username, password);
-    let user = remoteLogin.user;
-
-    if (!user && remoteLogin.fallbackToLocal) {
-      user = findLocalActiveUser(username, password);
-    }
+    const loginResult = await loginWithApi(username, password);
+    let user = loginResult.user;
 
     if (!user) {
-      ui.loginError.textContent = remoteLogin.error || "Invalid username or password.";
+      ui.loginError.textContent = loginResult.error || "Invalid username or password.";
       return;
     }
 

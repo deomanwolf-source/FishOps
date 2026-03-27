@@ -34,14 +34,14 @@ TMP_FILE="$(mktemp)"
 
 cat > "${TMP_FILE}" <<EOF
 [Unit]
-Description=FishOps Server
+Description=FishOps Static Web
 After=network.target
 
 [Service]
 Type=simple
 User=${RUN_USER}
 WorkingDirectory=${PROJECT_DIR}
-ExecStart=${NODE_BIN} ${PROJECT_DIR}/server/index.mjs
+ExecStart=${NODE_BIN} ${PROJECT_DIR}/tools/serve-web.mjs --host 0.0.0.0 --port ${PORT}
 Restart=always
 RestartSec=3
 Environment=PORT=${PORT}
